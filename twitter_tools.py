@@ -13,18 +13,51 @@ import traceback
 import numpy as np
 import time
 
-#Scrape fronda followers:
+#class to get data of followers of a certain Twitter profile
 
 class FollowerScraper:
+
+    
     
     def __init__(self,screen_name, api, lang, cols, count):
-        self.ids = api.followers_ids(screen_name,count = count)
-        self.cols = np.unique(["id"] + cols)
+        """
+        Parameters
+        ----------
+        screen_name : name of the profile
+        api :  Tweepy api object
+        lang : Tweepy language abbreviation
+        cols : columns to collect - follows the structure of Tweepy JSON files, where 
+        "-" stands for dictionary depth level, 
+        i.e. "entities-hashtags" will return hashtag values from dict entities
+        count : number of users to extract data from
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.ids = api.followers_ids(screen_name,count = count) #get user ids
+        self.cols = np.unique(["id"] + cols) #set columns
         self.lang = lang
         self.api = api
     
     def scrape(self, filename):
-        if os.path.exists(filename):
+        """
+        
+
+        Parameters
+        ----------
+        filename : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        df : TYPE
+            DESCRIPTION.
+
+        """
+        if os.path.exists(filename): #create output file if doesn't exist
             df = pd.read_csv(filename,index_col = 0)
             row = df.shape[0]+1
         else:
@@ -48,7 +81,7 @@ class FollowerScraper:
                     else:
                         continue
             except Exception:
-                traceback.print_exc()
+                #traceback.print_exc()
                 df.to_csv(filename) #save
                 return df
         df.to_csv(filename) #save
