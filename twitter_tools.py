@@ -58,7 +58,22 @@ def tweet_stats(twitter_text):
     tweets = [re.sub(r' +',' ',tweet) for tweet in tweets]
     
     #get counts of emojis and emoticons
-    re_emoji = re.compile(u'([\U00002600-\U000027BF])|([\U0001f300-\U0001f64F])|([\U0001f680-\U0001f6FF])')
+    re_emoji = re.compile(
+    "["
+    "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+    "\U0001F300-\U0001F5FF"  # symbols & pictographs
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F680-\U0001F6FF"  # transport & map symbols
+    "\U0001F700-\U0001F77F"  # alchemical symbols
+    "\U0001F780-\U0001F7FF"  # Geometric Shapes Extended
+    "\U0001F800-\U0001F8FF"  # Supplemental Arrows-C
+    "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
+    "\U0001FA00-\U0001FA6F"  # Chess Symbols
+    "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
+    "\U00002702-\U000027B0"  # Dingbats
+    "\U000024C2-\U0001F251" 
+    "]+"
+)
     emojis = [re_emoji.findall(x) for x in tweets]
     counts["emoti"] = [len(x) for x in emojis]
     
@@ -95,37 +110,65 @@ def tweet_stats(twitter_text):
 
 
 
-def preprocess_tweets(twitter_text,url_token = False, emoji_token = False, numbers_token = False, hashtag_token = False, mention_token = True):
+def preprocess_tweets(twitter_text,url_token = False, emoji_token = False, numbers_token = False, hashtag_token = False, mention_token = False):
     tweets = list(twitter_text) #convert to list
     tweets = [tweet.lower() for tweet in tweets] #lowercase
     
+    url = emoji = emoticon_pos = emoticon_neg = emoticon_neut = numbers = hashtag = mention = ' ' 
+    
+    if url_token:
+        url = " urltoken "
+    
+    if emoji_token:
+        emoji = " emojitoken "
+        emoticon_pos = " emoticon_pos "
+        emoticon_neg = " emoticon_neg "
+        emoticon_neut = " emoticon_neut "
+    
+    if numbers_token:
+        numbers = " numbertoken "
+    
+    if hashtag_token:
+        hashtag = " hashtagtoken "
+    
+    if mention_token:
+        mention = " mentiontoken "
+    
     
     #urls
-    if url_token:
-        #tweets = [re.sub(r'(?:https?\:\/\/)?(?:www\.)?[a-zA-Z0-9-]+\.(?:(?:[a-zA-Z0-9-]+\.)*)?[a-z]{2,4}(?:(?:\/\S+)*)?','urltoken',tweet) for tweet in tweets]
-        tweets = [re.sub(r"(?:https?\:\/\/)?(?:www\.)?[a-zA-Z0-9-]+\.(?:(?:[a-zA-Z0-9-]+\.)*)?[a-z]{2,4}(?:(?:(\/|\?)\S+)*)?",'urltoken',tweet) for tweet in tweets]
-    else:
-        #tweets = [re.sub(r'(?:https?\:\/\/)?(?:www\.)?[a-zA-Z0-9-]+\.(?:(?:[a-zA-Z0-9-]+\.)*)?[a-z]{2,4}(?:(?:\/\S+)*)?',' ',tweet) for tweet in tweets]
-        tweets = [re.sub(r"(?:https?\:\/\/)?(?:www\.)?[a-zA-Z0-9-]+\.(?:(?:[a-zA-Z0-9-]+\.)*)?[a-z]{2,4}(?:(?:(\/|\?)\S+)*)?",' ',tweet) for tweet in tweets]
+    url_regex = r"(?:https?\:\/\/)?(?:www\.)?[a-zA-Z0-9-]+\.(?:(?:[a-zA-Z0-9-]+\.)*)?[a-z]{2,4}(?:(?:(\/|\?)\S+)*)?"
+    tweets = [re.sub(url_regex, url ,tweet) for tweet in tweets]
+
         
         
     #emoticons and emojis
-    if emoji_token:
-        tweets = [re.sub(u'([\U00002600-\U000027BF])|([\U0001f300-\U0001f64F])|([\U0001f680-\U0001f6FF])','emojitoken',tweet) for tweet in tweets]
-    tweets = [re.sub(r"[oO>]?[;:=Xx8]+'?\-?[)>)pPdD3\]\}\*]+",' emoticonpos ',tweet) for tweet in tweets]
-    tweets = [re.sub(r"[oO>]?[:;=]+'?\-?[(<\\\/\[)\{]+",' emoticonneg ',tweet) for tweet in tweets]
-    tweets = [re.sub(r"[oO>]?[:;=]+'?\-?[oO]+",' emoticonneut ',tweet) for tweet in tweets]
+    re_emoji = re.compile(
+    "["
+    "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+    "\U0001F300-\U0001F5FF"  # symbols & pictographs
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F680-\U0001F6FF"  # transport & map symbols
+    "\U0001F700-\U0001F77F"  # alchemical symbols
+    "\U0001F780-\U0001F7FF"  # Geometric Shapes Extended
+    "\U0001F800-\U0001F8FF"  # Supplemental Arrows-C
+    "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
+    "\U0001FA00-\U0001FA6F"  # Chess Symbols
+    "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
+    "\U00002702-\U000027B0"  # Dingbats
+    "\U000024C2-\U0001F251" 
+    "]+")
+    
+    tweets = [re.sub(re_emoji, emoji, tweet) for tweet in tweets]
+    tweets = [re.sub(r"[oO>]?[;:=Xx8]+'?\-?[)>)pPdD3\]\}\*]+", emoticon_pos, tweet) for tweet in tweets]
+    tweets = [re.sub(r"[oO>]?[:;=]+'?\-?[(<\\\/\[)\{]+", emoticon_neg, tweet) for tweet in tweets]
+    tweets = [re.sub(r"[oO>]?[:;=]+'?\-?[oO]+", emoticon_neut, tweet) for tweet in tweets]
     
     
     #remove words of length == 1
     tweets = [re.sub(r'\b(\w)\b',' ',tweet) for tweet in tweets]
     
-    
     #digits
-    if numbers_token:
-        tweets = [re.sub(r"(\S+)?\d+(\S+)?",'numbertoken',tweet) for tweet in tweets]
-    else:
-        tweets = [re.sub(r"(\S+)?\d+(\S+)?",' ',tweet) for tweet in tweets]
+    tweets = [re.sub(r"(\S+)?\d+(\S+)?", numbers ,tweet) for tweet in tweets]
         
         
     #rt flags
@@ -135,19 +178,15 @@ def preprocess_tweets(twitter_text,url_token = False, emoji_token = False, numbe
     tweets = [re.sub("\\n",' ', tweet) for tweet in tweets]
     
     #hashtags
-    if hashtag_token:
-        tweets = [re.sub(r'\#[a-zA-Z0-9]+','hashtagtoken',tweet) for tweet in tweets]
-    else:
-        tweets = [re.sub(r'\#[a-zA-Z0-9]+',' ',tweet) for tweet in tweets]
+    tweets = [re.sub(r'\#[a-zA-Z0-9]+', hashtag, tweet) for tweet in tweets]
+    
     #usermentions
-    if mention_token:
-        tweets = [re.sub(r'\@\w+(?!\.\w+)\b',' mentiontoken ',tweet) for tweet in tweets]
-    else:
-        tweets = [re.sub(r'\@\w+(?!\.\w+)\b',' ',tweet) for tweet in tweets]
+    tweets = [re.sub(r'\@\w+(?!\.\w+)\b', mention, tweet) for tweet in tweets]
     
     #non alphanumeric
     tweets = [re.sub(r"\&amp"," ",tweet) for tweet in tweets] #bug in twitter - &amp appearing
-    tweets = [re.sub(r"[\!\"\#\$\%\&\'\(\)\*\+\,\-\.\/\:\;\<\=\>\?\@\[\\\]\^\_\`\{\|\}\~\…\–]+"," ",tweet) for tweet in tweets]
+    tweets = [re.sub(r"\W+"," ",tweet) for tweet in tweets]
+    #tweets = [re.sub(r"[\!\"\#\$\%\&\'\(\)\*\+\,\-\.\/\:\;\<\=\>\?\@\[\\\]\^\_\`\{\|\}\~\…\–]+"," ",tweet) for tweet in tweets]
     #underscores
     tweets = [re.sub(r"_+"," ",tweet) for tweet in tweets]
     
