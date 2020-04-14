@@ -58,7 +58,8 @@ class Scraper:
         
             
             
-    def scrape(self, api_method, record = None, min_date = None, limit = 0, **kwargs):
+    def scrape(self, api_method, path, record = None, min_date = None, 
+               limit = 0, output = "csv", cols = None, **kwargs):
         """
         Generic method for scraping. Takes an api method and 
         uses Tweepy Cursor to collect the data.
@@ -87,8 +88,17 @@ class Scraper:
             Number of tweets scraped
 
         """
-        #sinceid determines since when to search
-        if (record is None or not record):
+            
+        #define a writer partial function to write to either csv or txt    
+        if output == "csv":
+            writer = functools.partial(self._writeCSV, path_csv = path + ".csv", cols = cols)
+        elif output == "txt":
+            writer = functools.partial(self._writeTXT, path_txt = path + ".txt")
+        else:
+            raise ValueError("Invalid output string specified")
+            
+        
+        if not record:
             record = []
             sinceid = None
 
@@ -126,6 +136,7 @@ class Scraper:
                 count += new
                 self.logger.info("Scraped {} new tweets".format(new))
         
+                writer(tweets_jsons) #write to file
                 
                 if new == 0:
                     #if there were no tweets to be evaluated, break while and return
@@ -135,6 +146,8 @@ class Scraper:
                 if sinceid is None:
                     #update max id - only during first scrape
                     maxid = tweet.id_str
+                
+                
         
             except Exception as e:
                 #on error, try again three times and if still no luck, finish scraping
@@ -150,7 +163,7 @@ class Scraper:
                 
             
         gc.collect()
-        return tweets_jsons, record, count
+        return record, count
     
     
     #utility function for recursively traversing the json file into a one level dictionary
@@ -535,7 +548,8 @@ class FollowerScraper(Scraper):
         
         
     
-    def scrape(self, sample, path, min_date = None, limit = 0, cols = None, csv = True):
+    def scrape(self, sample, path, min_date = None, 
+               limit = 0, cols = None, output = "csv"):
         """
         Scrape tweets from a list of user IDs bweteen a specified date to now and
         write them to output file.
@@ -551,7 +565,11 @@ class FollowerScraper(Scraper):
         limit: int
             how many tweets to scrape in one iteration.
         cols: list of str or None
-            which column to scrape from each user
+            which column to scrape from each user. Works only with output = "csv"
+        output: string
+            type of file to write to. 
+            "csv" indicates a csv file with columns indicated by the cols argument; 
+            "txt" indicates json strings in a csv file
         
             
         
@@ -569,27 +587,24 @@ class FollowerScraper(Scraper):
         else:
             record_dict = collections.defaultdict(lambda: None)
             
-        #define a writer partial function to write to either csv or txt    
-        if csv:
-            writer = functools.partial(super()._writeCSV, path_csv = path + ".csv", cols = cols)
-        else:
-            writer = functools.partial(super()._writeTXT, path_txt = path + ".txt")
-            
         total_new = 0 #count new tweets scraped
         
         #iterator over users provided
         for user_id in tqdm(sample,position=0, leave=True): #iterate over users
             
             try:
-                tweets, record, count = super().scrape(api_method = self.api.user_timeline, 
+                record, count = super().scrape(api_method = self.api.user_timeline, 
+                                                       user_id = user_id, 
+                                                       rt = True,
+                                                       path = path, 
                                                        record = record_dict[str(user_id)],
                                                        min_date = min_date,
-                                                       limit = limit, user_id = user_id,
-                                                       rt = True)
+                                                       limit = limit, 
+                                                       output = output, 
+                                                       cols = cols)
                 
                 self.logger.info("Scraped user ID {}. Number of tweets {}.".format(user_id, count))
                 total_new += count
-                writer(tweets) #write
                 record_dict[user_id] = record 
                 json.dump(record_dict, open(path_record, "w")) #save record
             
@@ -609,32 +624,47 @@ class FollowerScraper(Scraper):
 
 class KeywordsScraper(Scraper):
     
-    def scrape(self, keywords, path, min_date, limit = 0, cols = None, csv = True):
+    def scrape(self, keywords, path, min_date = None, 
+               limit = 0, cols = None, output = "csv"):
+        """
+        
+
+        Parameters
+        ----------
+        keywords : string
+            keywords to scrape
+        path : string
+            path to scrape to without extension
+        
+        **kwargs : kwargs for the  generic scraper method
+
+        Returns
+        -------
+        None.
+
+        """
         
         #the record is used to keep track of tweet IDs 
-        path_record = path + ".txt"
+        path_record = path + "_record.txt"
         if os.path.exists(path_record):
             with open(path_record,"r") as f:
                 record = f.read().splitlines()
         else:
             record = []
             
-        #define a writer partial function to write to either csv or txt    
-        if csv:
-            writer = functools.partial(super()._writeCSV, path_csv = path + ".csv", cols = cols)
-        else:
-            writer = functools.partial(super()._writeTXT, path_txt = path + ".txt")
-            
         
             
         try:
-            tweets, record, count = super().scrape(api_method = self.api.search, 
-                                                   q = keywords, 
+            record, count = super().scrape(api_method = self.api.search, 
+                                                   q = keywords,
+                                                   rt = True,
+                                                   path = path, 
                                                    record = record,
                                                    min_date = min_date,
-                                                   limit = limit, rt = True)
-            
-            writer(tweets) #write
+                                                   limit = limit, 
+                                                   output = output, 
+                                                   cols = cols)
+            #store record
             with open(path_record,"w") as f:
                 f.write([rec + "\n" for rec in record], "w")
                 
