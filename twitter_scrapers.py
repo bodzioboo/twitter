@@ -604,7 +604,49 @@ class FollowerScraper(Scraper):
         json.dump(record_dict, open(path_record, "w"))
         self.logger.info("Finished scraping. Total {}".format(total_new))
         
+
+
+
+class KeywordsScraper(Scraper):
+    
+    def scrape(self, keywords, path, min_date, limit = 0, cols = None, csv = True):
         
+        #the record is used to keep track of tweet IDs 
+        path_record = path + ".txt"
+        if os.path.exists(path_record):
+            with open(path_record,"r") as f:
+                record = f.read().splitlines()
+        else:
+            record = []
+            
+        #define a writer partial function to write to either csv or txt    
+        if csv:
+            writer = functools.partial(super()._writeCSV, path_csv = path + ".csv", cols = cols)
+        else:
+            writer = functools.partial(super()._writeTXT, path_txt = path + ".txt")
+            
+        
+            
+        try:
+            tweets, record, count = super().scrape(api_method = self.api.search, 
+                                                   q = keywords, 
+                                                   record = record,
+                                                   min_date = min_date,
+                                                   limit = limit, rt = True)
+            
+            writer(tweets) #write
+            with open(path_record,"w") as f:
+                f.write([rec + "\n" for rec in record], "w")
+                
+        
+        #log and go to next id on exceptions
+        except Exception as e:
+            self.logger.exception("Failed. Error \n{}.".format(e.args[0]))
+                
+            
+        #DONE:
+        print("Total tweets scraped {}".format(count))
+        self.logger.info("Finished scraping. Total {}".format(count))        
         
         
         
