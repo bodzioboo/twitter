@@ -14,6 +14,7 @@ import json
 import datetime
 import time
 import logging
+import operator
 import gc
 import itertools
 import functools
@@ -59,7 +60,7 @@ class Scraper:
             
             
     def scrape(self, api_method, path, record = None, min_date = None, 
-               limit = 0, output = "csv", cols = None, **kwargs):
+               limit = 0, output = "csv", cols = None, verbose = False, **kwargs):
         """
         Generic method for scraping. Takes an api method and 
         uses Tweepy Cursor to collect the data.
@@ -110,7 +111,7 @@ class Scraper:
         #deeper whenever it's called
         maxid = None
             
-        tweets_jsons = [] #store tweet data
+        
         count = 0 #store tweets obtained
         if min_date is None: 
             min_date = datetime.datetime.now() - datetime.timedelta(hours = 36)
@@ -120,6 +121,7 @@ class Scraper:
         
         
         while tweet_date >= min_date:
+            tweets_jsons = [] #store tweet data
         #keep scraping until a tweet reaches the minimum date specified
             try: 
                 cursor = Cursor(api_method,tweet_mode = "extended", 
@@ -134,18 +136,20 @@ class Scraper:
                         record.append(tweet.id_str)
                         new += 1
                 count += new
-                self.logger.info("Scraped {} new tweets".format(new))
-        
-                writer(tweets_jsons) #write to file
                 
-                if new == 0:
+                if verbose:
+                    print(f"\rNumber of tweets scraped {count}", end = "")
+                
+                if new != 0:
+                    self.logger.info("Scraped {} new tweets".format(new))
+                    writer(tweets_jsons) #write to file
+                
+                elif new == 0:
                     #if there were no tweets to be evaluated, break while and return
                     self.logger.info("No more tweets to be scraped.")
                     break
         
-                if sinceid is None:
-                    #update max id - only during first scrape
-                    maxid = tweet.id_str
+                maxid = tweet.id_str
                 
                 
         
@@ -218,6 +222,7 @@ class Scraper:
         if not tweets_jsons:
             self.logger.info("List empty. Not writing Anything")
             return None
+        
         
         
         #store tweets
@@ -337,6 +342,35 @@ class FollowerScraper(Scraper):
 
         """
         super().__init__(api, path_log)
+        
+        
+    def restoreRecord(self, path):
+        """
+        Used to restore scraping record if the json file is corrupt
+
+        Parameters
+        ----------
+        path : path to the csv file containing scraped tweets
+
+        Returns
+        -------
+        record : dict.
+
+        """
+        data = pd.read_csv(path, dtype = str, index_col = 0, 
+                             usecols = ["Unnamed: 0", "id_str","user-id_str"])
+        data = data.loc[data.index.map(lambda x: str(x).isnumeric()).tolist()]
+        #zip user-tweet id pairs
+        zipper = zip(data["user-id_str"].tolist(),data["id_str"].tolist())
+        #sort by user id
+        zipper = sorted(zipper, key = lambda x: str(x[0]))
+        #create record dictionary
+        record = dict()
+        #iteratre over grouped entities and 
+        for k, g in itertools.groupby(list(zipper), lambda x: x[0]):
+            record[k] = list(map(operator.itemgetter(1), g))
+        return record
+        
         
         
                     
@@ -582,7 +616,13 @@ class FollowerScraper(Scraper):
         #the record dict is used to keep track of tweet IDs scraper for each user
         path_record = path + ".json"
         if os.path.exists(path_record):
-            record_dict = json.load(open(path_record, "r"))
+            
+            #if json throws error, recover record using the csv file:
+            try:
+                record_dict = json.load(open(path_record, "r"))
+            except json.JSONDecodeError:
+                self.logger.exception("Recovering record dictionary")
+                record_dict = self.restoreRecord(path + ".csv")
             record_dict = collections.defaultdict(lambda: None, record_dict)
         else:
             record_dict = collections.defaultdict(lambda: None)
@@ -663,7 +703,8 @@ class KeywordsScraper(Scraper):
                                                    min_date = min_date,
                                                    limit = limit, 
                                                    output = output, 
-                                                   cols = cols)
+                                                   cols = cols, 
+                                                   verbose = True)
             #store record
             with open(path_record,"w") as f:
                 f.write([rec + "\n" for rec in record], "w")
@@ -684,7 +725,7 @@ class KeywordsScraper(Scraper):
         
         
         
-        
+
         
         
         
