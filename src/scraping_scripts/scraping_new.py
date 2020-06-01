@@ -19,8 +19,8 @@ import pickle
 import argparse
 import os
 from tweepy import API, AppAuthHandler
-from config import consumer_key, consumer_secret, access_token, access_secret
-from twitter_scrapers import FollowerScraper, KeywordsScraper
+from twitter_tools.config import consumer_key, consumer_secret
+from twitter_tools.scrapers import FollowerScraper
 
 if __name__ == "__main__":
     
@@ -36,18 +36,18 @@ if __name__ == "__main__":
     api = API(auth, wait_on_rate_limit = True, wait_on_rate_limit_notify = True) 
     
     #initialize scraper
-    twitter_columns = pickle.load(open("data/twitter_columns.pickle","rb"))
+    twitter_columns = pickle.load(open("/home/piotr/data/twitter_columns.pickle","rb"))
     scraper = FollowerScraper(api = api, path_log = "scraper_new.log")
     
     
     #government
-    gov_ids = pickle.load(open("data/sample/gov_ids.pickle","rb"))
-    scraper.scrape(gov_ids[:5000],path = "data/scraped/gov_tweets",
+    gov_ids = pickle.load(open("/home/piotr/data/sample/gov_ids.pickle","rb"))
+    scraper.scrape(gov_ids[:5000],path = "/home/piotr/data/scraped/gov_tweets",
                min_date = scrape_from,
                limit = 50, cols = twitter_columns)
     
-    opp_ids = pickle.load(open("data/sample/opp_ids.pickle","rb"))
-    scraper.scrape(opp_ids[:5000], path = "data/scraped/opp_tweets",
+    opp_ids = pickle.load(open("/home/piotr/data/sample/opp_ids.pickle","rb"))
+    scraper.scrape(opp_ids[:5000], path = "/home/piotr/data/scraped/opp_tweets",
                min_date = scrape_from, 
                limit = 50, cols = twitter_columns)
     

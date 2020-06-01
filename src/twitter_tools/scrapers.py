@@ -8,8 +8,6 @@ Created on Sun Mar 22 10:29:16 2020
 
 import os
 import pandas as pd
-import numpy as np
-import dask.array as da
 import json
 import datetime
 import time
@@ -20,8 +18,12 @@ import itertools
 import functools
 import collections
 from tqdm import tqdm 
-import random
 from tweepy import Cursor
+import numpy as np
+import dask.array as da
+import pdb
+
+
 
 
 
@@ -30,7 +32,7 @@ class Scraper:
     This is a generic class containing some methods for scrapering tweets
     """
     
-    def __init__(self, api, path_log):
+    def __init__(self, api, path_log = None):
         """
         
 
@@ -49,12 +51,13 @@ class Scraper:
         
         #Log setup
         self.api = api
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger()
         self.logger.setLevel(logging.DEBUG)
-        handler = logging.FileHandler(path_log)
-        formatter = logging.Formatter('%(asctime)s: %(message)s')
-        handler.setFormatter(formatter)
-        self.logger.addHandler(handler)
+        if path_log:
+            formatter = logging.Formatter('%(asctime)s: %(message)s')
+            handler = logging.FileHandler(path_log)
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
         self.logger.info("Initialized")
         
             
@@ -370,11 +373,167 @@ class FollowerScraper(Scraper):
         for k, g in itertools.groupby(list(zipper), lambda x: x[0]):
             record[k] = list(map(operator.itemgetter(1), g))
         return record
+
+                
+        
+           
         
         
         
-                    
     
+    def scrape(self, sample, path, min_date = None, 
+               limit = 0, cols = None, output = "csv"):
+        """
+        Scrape tweets from a list of user IDs bweteen a specified date to now and
+        write them to output file.
+
+        Parameters
+        ----------
+        sample: list of str
+            List of user IDs
+        path: string
+            path to store record and output
+        min_date: datetime object
+            what date to scrape from
+        limit: int
+            how many tweets to scrape in one iteration.
+        cols: list of str or None
+            which column to scrape from each user. Works only with output = "csv"
+        output: string
+            type of file to write to. 
+            "csv" indicates a csv file with columns indicated by the cols argument; 
+            "txt" indicates json strings in a csv file
+        
+            
+        
+        Returns
+        -------
+        None
+
+        """
+        
+        #the record dict is used to keep track of tweet IDs scraper for each user
+        path_record = path + ".json"
+        if os.path.exists(path_record):
+            
+            #if json throws error, recover record using the csv file:
+            try:
+                record_dict = json.load(open(path_record, "r"))
+            except json.JSONDecodeError:
+                self.logger.exception("Recovering record dictionary")
+                record_dict = self.restoreRecord(path + ".csv")
+            record_dict = collections.defaultdict(lambda: None, record_dict)
+        else:
+            record_dict = collections.defaultdict(lambda: None)
+            
+        total_new = 0 #count new tweets scraped
+        
+        #iterator over users provided
+        for user_id in tqdm(sample,position=0, leave=True): #iterate over users
+            
+            try:
+                record, count = super().scrape(api_method = self.api.user_timeline, 
+                                                       user_id = user_id, 
+                                                       rt = True,
+                                                       path = path, 
+                                                       record = record_dict[str(user_id)],
+                                                       min_date = min_date,
+                                                       limit = limit, 
+                                                       output = output, 
+                                                       cols = cols)
+                
+                self.logger.info("Scraped user ID {}. Number of tweets {}.".format(user_id, count))
+                total_new += count
+                record_dict[user_id] = record 
+                json.dump(record_dict, open(path_record, "w")) #save record
+            
+            #log and go to next id on exceptions
+            except Exception as e:
+                self.logger.exception("Failed on user {}. Error \n{}.".format(user_id, e.args[0]))
+                continue
+                
+            
+        #DONE:
+        print("Total tweets scraped {}".format(total_new))
+        json.dump(record_dict, open(path_record, "w"))
+        self.logger.info("Finished scraping. Total {}".format(total_new))
+        
+        
+        
+        
+        
+        
+
+
+
+class KeywordsScraper(Scraper):
+    
+    def scrape(self, keywords, path, min_date = None, 
+               limit = 0, cols = None, output = "csv"):
+        """
+        
+
+        Parameters
+        ----------
+        keywords : string
+            keywords to scrape
+        path : string
+            path to scrape to without extension
+        
+        **kwargs : kwargs for the  generic scraper method
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        #the record is used to keep track of tweet IDs 
+        path_record = path + "_record.txt"
+        if os.path.exists(path_record):
+            with open(path_record,"r") as f:
+                record = f.read().splitlines()
+        else:
+            record = []
+            
+        
+            
+        try:
+            record, count = super().scrape(api_method = self.api.search, 
+                                                   q = keywords,
+                                                   rt = True,
+                                                   path = path, 
+                                                   record = record,
+                                                   min_date = min_date,
+                                                   limit = limit, 
+                                                   output = output, 
+                                                   cols = cols, 
+                                                   verbose = True)
+            #store record
+            with open(path_record,"w") as f:
+                f.write([rec + "\n" for rec in record], "w")
+                
+        
+        #log and go to next id on exceptions
+        except Exception as e:
+            self.logger.exception("Failed. Error \n{}.".format(e.args[0]))
+                
+            
+        #DONE:
+        print("Total tweets scraped {}".format(count))
+        self.logger.info("Finished scraping. Total {}".format(count))        
+        
+        
+        
+
+        
+        
+        
+class TwitterSampler(Scraper):
+    
+            
+        
+        
     def getFollowers(self, profiles, path):
         """
         Gets ids of profile followers.
@@ -383,7 +542,7 @@ class FollowerScraper(Scraper):
         Parameters
         ----------
         profiles : list of strings
-            Profile names to scrape from
+            Profile ids
         path: string
             path to store result in
 
@@ -392,84 +551,74 @@ class FollowerScraper(Scraper):
         Dictionary of profiles associated with their followers IDs.
 
         """
-        
+        self.logger.info(f"Scraping to file {path}")
         if os.path.exists(path):
             followers = json.load(open(path,"r"))
-            if set(profiles) != set(followers.keys()):
-                raise ValueError("Profiles don't match the target dictionary")
         else:
             followers = dict()
-            for profile in profiles:
-                followers[profile] = []
-                while True:
-                    try:
-                        for follower_id in tqdm(Cursor(self.api.followers_ids, screen_name = profile).pages(),position=0, leave=True):
-                            followers[profile].extend(follower_id)
-                    except Exception as e:
-                        self.logger.exception("Error {}".format(e.args[0]))
-                        print("Error. Sleeping 60 seconds")
-                        time.sleep(60)
-                        continue
-                    break
-                self.logger.info("Scraped followers of profile {}".format(profile))
-                json.dump(followers, open(path,"w")) #save
+        for profile in tqdm(profiles):
+            if profile in followers:
+                continue
+            followers[profile] = []
+            while True:
+                try:
+                    for follower_id in Cursor(self.api.followers_ids, 
+                                                   user_id = profile).pages():
+                        followers[profile].extend(follower_id)
+                except Exception as e:
+                    self.logger.exception("Error {}".format(e.args[0]))
+                    print("Error. Sleeping 60 seconds")
+                    time.sleep(60)
+                break
+            self.logger.info("Scraped followers of profile {}".format(profile))
+            json.dump(followers, open(path,"w")) #save
         return followers
-            
-            
-    def sampleFollowers(self, followers, num_users, min_usr_tweets = 1, 
-                        last_date_active = None, lang = None):
+    
+    
+    def getFriends(self, profiles, path):
+        
+        
         """
+        Gets ids of profile followers.
         
 
         Parameters
         ----------
-        followers : list
-            DESCRIPTION.
-        num_users: int
-            number of users to sample
-        min_user_tweets: int
-            criterion: minimun number of tweets to include
-        last_date_active : datetime object
-            criterion: minimum last activity of the user profile
+        profiles : list of strings
+            Profile ids
         path: string
-            path to store sample in
-            
-        
+            path to store result in
 
         Returns
         -------
-        sample : list
-            sample of users from followers that specify the criteria.
+        Dictionary of profiles associated with their followers IDs.
 
         """
-        if last_date_active is None:
-            last_date_active == datetime.datetime.now() - datetime.timedelta(days = 1)
-
-        
-        #remove duplicates and shuffle
-        followers = list(set(followers))
-        sample = list() #store sample
-        print("Sampling users")
-        
-        #while sample not complete
-        while len(sample) < num_users and len(followers) > 0:
-            print("\rUsers sampled {}. Population remaining {}".format(len(sample),len(followers)), end = "")
-            #sample random index
-            random_index = random.randint(0, len(followers))
-            try:
-                random_user = self.api.get_user(followers.pop(random_index))
-            #ensure conditions are met:
-                if (not random_user.protected and 
-                    random_user.statuses_count > min_usr_tweets and 
-                    random_user.status.created_at > last_date_active and 
-                    random_user.lang in lang):
-                    sample.append(random_user.id) #add id to sample - check this
-            except Exception as e:
-                self.logger.exception("Exception in sampling. Error: {}".format(e.args[0]))
-                time.sleep(60)
+        self.logger.info(f"Scraping to file {path}")
+        if os.path.exists(path):
+            friends = json.load(open(path,"r"))
+        else:
+            friends = dict()
+        for profile in tqdm(profiles):
+            if profile in friends:
                 continue
-        self.logger.info("Finished sampling. Sampled {} users".format(len(sample)))
-        return sample
+            friends[profile] = []
+            while True:
+                try:
+                    for friend_id in Cursor(self.api.friends_ids, 
+                                                   user_id = profile).pages():
+                        friends[profile].extend(friend_id)
+                except Exception as e:
+                    self.logger.exception("Error {}".format(e.args[0]))
+                    print("Error. Sleeping 60 seconds")
+                    time.sleep(60)
+                break
+            self.logger.info("Scraped friends of profile {}".format(profile))
+            json.dump(friends, open(path,"w")) #save
+        return friends
+        
+            
+            
     
     
     
@@ -575,158 +724,6 @@ class FollowerScraper(Scraper):
                 time.sleep(60)
                 continue
         self._writeCSV(followers_data, path)
-                
-        
-           
-        
-        
-        
-    
-    def scrape(self, sample, path, min_date = None, 
-               limit = 0, cols = None, output = "csv"):
-        """
-        Scrape tweets from a list of user IDs bweteen a specified date to now and
-        write them to output file.
-
-        Parameters
-        ----------
-        sample: list of str
-            List of user IDs
-        path: string
-            path to store record and output
-        min_date: datetime object
-            what date to scrape from
-        limit: int
-            how many tweets to scrape in one iteration.
-        cols: list of str or None
-            which column to scrape from each user. Works only with output = "csv"
-        output: string
-            type of file to write to. 
-            "csv" indicates a csv file with columns indicated by the cols argument; 
-            "txt" indicates json strings in a csv file
-        
-            
-        
-        Returns
-        -------
-        None
-
-        """
-        
-        #the record dict is used to keep track of tweet IDs scraper for each user
-        path_record = path + ".json"
-        if os.path.exists(path_record):
-            
-            #if json throws error, recover record using the csv file:
-            try:
-                record_dict = json.load(open(path_record, "r"))
-            except json.JSONDecodeError:
-                self.logger.exception("Recovering record dictionary")
-                record_dict = self.restoreRecord(path + ".csv")
-            record_dict = collections.defaultdict(lambda: None, record_dict)
-        else:
-            record_dict = collections.defaultdict(lambda: None)
-            
-        total_new = 0 #count new tweets scraped
-        
-        #iterator over users provided
-        for user_id in tqdm(sample,position=0, leave=True): #iterate over users
-            
-            try:
-                record, count = super().scrape(api_method = self.api.user_timeline, 
-                                                       user_id = user_id, 
-                                                       rt = True,
-                                                       path = path, 
-                                                       record = record_dict[str(user_id)],
-                                                       min_date = min_date,
-                                                       limit = limit, 
-                                                       output = output, 
-                                                       cols = cols)
-                
-                self.logger.info("Scraped user ID {}. Number of tweets {}.".format(user_id, count))
-                total_new += count
-                record_dict[user_id] = record 
-                json.dump(record_dict, open(path_record, "w")) #save record
-            
-            #log and go to next id on exceptions
-            except Exception as e:
-                self.logger.exception("Failed on user {}. Error \n{}.".format(user_id, e.args[0]))
-                continue
-                
-            
-        #DONE:
-        print("Total tweets scraped {}".format(total_new))
-        json.dump(record_dict, open(path_record, "w"))
-        self.logger.info("Finished scraping. Total {}".format(total_new))
-        
-
-
-
-class KeywordsScraper(Scraper):
-    
-    def scrape(self, keywords, path, min_date = None, 
-               limit = 0, cols = None, output = "csv"):
-        """
-        
-
-        Parameters
-        ----------
-        keywords : string
-            keywords to scrape
-        path : string
-            path to scrape to without extension
-        
-        **kwargs : kwargs for the  generic scraper method
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        #the record is used to keep track of tweet IDs 
-        path_record = path + "_record.txt"
-        if os.path.exists(path_record):
-            with open(path_record,"r") as f:
-                record = f.read().splitlines()
-        else:
-            record = []
-            
-        
-            
-        try:
-            record, count = super().scrape(api_method = self.api.search, 
-                                                   q = keywords,
-                                                   rt = True,
-                                                   path = path, 
-                                                   record = record,
-                                                   min_date = min_date,
-                                                   limit = limit, 
-                                                   output = output, 
-                                                   cols = cols, 
-                                                   verbose = True)
-            #store record
-            with open(path_record,"w") as f:
-                f.write([rec + "\n" for rec in record], "w")
-                
-        
-        #log and go to next id on exceptions
-        except Exception as e:
-            self.logger.exception("Failed. Error \n{}.".format(e.args[0]))
-                
-            
-        #DONE:
-        print("Total tweets scraped {}".format(count))
-        self.logger.info("Finished scraping. Total {}".format(count))        
-        
-        
-        
-
-        
-        
-        
-
-        
         
         
         
