@@ -609,8 +609,7 @@ class TwitterSampler(Scraper):
                                                    user_id = profile).pages():
                         friends[profile].extend(friend_id)
                 except Exception as e:
-                    self.logger.exception("Error {}".format(e.args[0]))
-                    print("Error. Sleeping 60 seconds")
+                    self.logger.exception(f"Error {e.args[0]} Sleeping 60 seconds")
                     time.sleep(60)
                 break
             self.logger.info("Scraped friends of profile {}".format(profile))

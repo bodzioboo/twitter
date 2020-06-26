@@ -7,6 +7,7 @@ Created on Thu May 28 18:35:12 2020
 """
 
 import csv
+import pandas as pd
 import itertools
 import os
 import datetime
@@ -16,6 +17,7 @@ import stanza
 from nltk.metrics.distance import edit_distance
 import logging
 import pdb
+from tqdm import tqdm
 
 #use logger of whatever file it's executed from
 logger = logging.getLogger("__main__")
@@ -193,14 +195,6 @@ def clean_tweets(text,
     #urls
     url_regex = r"(?:https?\:\/\/)?(?:www\.)?[a-zA-Z0-9-]+\.(?:(?:[a-zA-Z0-9-]+\.)*)?[a-z]{2,4}(?:(?:(\/|\?)\S+)*)?"
     text = re.sub(url_regex, url ,text)
-    
-    
-    
-    
-
-    
-    
-    
 
     
     #hashtags - this is done before lowercasing, as I attempt to 
@@ -395,6 +389,88 @@ class SpellChecker:
             return pl
         else:
             return None
+        
+        
+def read_files(path, ndays, prefixes = ["gov","opp"], dtype = None, filter_fun = None):
+    """
+    
+    Iterator reading data
+    
+    Parameters
+    ----------
+    path : str
+        path to the folder containing the files.
+    ndays : int
+        number of days to be read.
+    prefixes : list
+        Prefixes used to separate classes. The default is ["gov","opp"].
+
+    Returns
+    -------
+    None.
+
+    """
+    
+    if not os.path.exists(path):
+        raise ValueError("Incorrect path")
+        
+    files = os.listdir(path)
+    if not files:
+        raise ValueError("Empty path")
+        
+        
+    files = sorted([fname for fname in files if "csv" in fname])
+    
+        
+    
+    for _ in range(ndays):
+        data = pd.DataFrame() 
+        for prefix in prefixes:
+            ind = files.index([elem for elem in files if prefix in elem][0])
+            tmp = pd.read_csv(os.path.join(path, files.pop(ind)), index_col = 0, dtype = dtype)
+            tmp["source"] = prefix
+            data = data.append(tmp)
+        data.reset_index(inplace = True, drop = True)
+        if filter_fun:
+            data = filter_fun(data)
+        yield data
+
+    
+def filter_data(path_source, path_target, nfiles, filter_fun, **kwargs):
+    """
+    Extension of the function above that writes the files to one csv
+
+    Parameters
+    ----------
+    path_source : str
+        source directory.
+    path_target : str
+        target file.
+    nfiles : int
+        number of file pairs.
+    filter_fun : function
+        function applied to data frame.
+
+    Returns
+    -------
+    None.
+
+    """
+    #clean:
+    if os.path.isfile(path_target):
+        os.remove(path_target)
+        
+    for data in tqdm(read_files(path_source, nfiles, prefixes = ["gov", "opp"], 
+                                dtype = str, 
+                                filter_fun = filter_fun, **kwargs)):
+        if os.path.isfile(path_target):
+            data.to_csv(path_target,  mode = "a", header = False)
+        else:
+            data.to_csv(path_target, mode = "w")
+        
+
+    
+
 
         
             
