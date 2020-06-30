@@ -8,9 +8,6 @@ Created on Wed Jun  3 15:42:37 2020
 
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.utils.extmath import randomized_svd
-import sys
-sys.path.append("/home/piotr/projects/twitter/src")
-from twitter_tools.utils import read_files
 import numpy as np
 import dask.array as da
 from nltk import FreqDist
@@ -20,8 +17,6 @@ import logging
 from collections import defaultdict
 from tqdm import tqdm
 import pdb
-from sklearn.model_selection import train_test_split
-import pandas as pd
 
 class SentenceEmbeddings:
     def __init__(self, path_embeddings, a = 10e-3, num_workers = 4, dask_split = 10, full_vocab = False):
@@ -186,12 +181,13 @@ class KTopicModel(SentenceEmbeddings):
         
         
         
-        if refit: #obtain complete sentence embeddings and vocabulary
+        if refit: #obtain complete sentence embeddings and vocabulary; use 
             sent_embed = super().fit(text)
         else:
             text = [elem.split() for elem in text]
             sent_embed = self.get_embeddings_sent(text, self.embed, self.weights)
             sent_embed = self.remove_pc(sent_embed)
+            
         
         
         lbl = self.cluster.predict(sent_embed)
@@ -230,46 +226,5 @@ class KTopicModel(SentenceEmbeddings):
                 continue
         return np.mean(scores)
     
-    
-class PolarizationEmbeddings(SentenceEmbeddings):
-    def fit(self, text, sources):
-        sent_embed = super().fit(text)
-        array1 = sent_embed[np.where(sources == "gov")[0]]
-        array2 = sent_embed[np.where(sources == "opp")[0]]
-        within1 = self._compare(array1, array1)
-        within2 = self._compare(array2, array2)
-        between1 = self._compare(array1, array2)
-        between2 = self._compare(array2, array1)
-        N = array1.shape[0] + array2.shape[0]
-        est = array1.shape[0]/N * (np.mean(between1) - np.mean(within1)) + array2.shape[0]/N * (np.mean(within2) - np.mean(between2))
-        pdb.set_trace()
-        return est
-        
-        
-        
-        
-        
-        
-        
-    def _compare(self, arr1, arr2):
-        #compute pairwise dot product:
-        denom = np.outer(np.linalg.norm(arr1, axis = 1), np.linalg.norm(arr2, axis = 1))
-        numer = arr1 @ arr2.T
-        return numer/denom
-    
         
             
-            
-
-if __name__ == "__main__":
-    test_path = "/home/piotr/projects/twitter/data/clean/"
-    path_embeddings = "/home/piotr/nlp/cc.pl.300.vec"
-    for dat in read_files(test_path, 1, ["gov", "opp"], dtype = str):
-        pass
-    
-    train, test = train_test_split(dat, train_size = 0.2)
-    #ktp = KTopicModel(k = 5, path_embeddings = path_embeddings)
-    #ktp.fit(test["lemmatized"])
-    ktp = PolarizationEmbeddings(path_embeddings = path_embeddings)
-    est = ktp.fit(train["lemmatized"].to_numpy(), train["source"].to_numpy())
-    print(est)
