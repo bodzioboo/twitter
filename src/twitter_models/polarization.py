@@ -19,10 +19,9 @@ import numpy as np
 import warnings
 from tqdm import tqdm
 warnings.filterwarnings('ignore')
-import pdb
 from collections import defaultdict
-import matplotlib.pyplot as plt
 from scipy.sparse import csr_matrix
+import pdb
 
 
 class ModelPolarization:
@@ -51,31 +50,30 @@ class ModelPolarization:
             self.vectorizer = CountVectorizer(ngram_range = ngram_range, min_df = limit)
         elif method == "tfidf":
             self.vectorizer = TfidfVectorizer(ngram_range = ngram_range, min_df = limit)
-        self.text_vectorized = None
-
-    def vectorize_data(self, data):
+            
+            
+    def _vectorize_text(self, text):
         """
-        
-
         Parameters
         ----------
-        data : list
-            List of strings to be vectorized.
-
+        text : list of strings
         Returns
         -------
-        text: np.array
-            vectorized text.
+        text_vectorized: sparse matrix
 
         """
-
-        self.vectorizer.fit(data)
-        text_vectorized = self.vectorizer.transform(data)
-        #text_vectorized = np.array(text_vectorized.toarray())
-
+        if hasattr(self.vectorizer, 'vocabulary_'):
+            text_vectorized = self.vectorizer.transform(text)
+        else:
+            text_vectorized = self.vectorizer.fit_transform(text)
+        
         return text_vectorized
+        
     
-    def aggregate(self, parties, speakers, text_vectorized):
+    
+    
+    
+    def _aggregate(self, parties, speakers, text_vectorized):
         """
         
         Aggregates the vectorized text data by speaker
@@ -118,7 +116,11 @@ class ModelPolarization:
 
         return parties_u, speakers_u, agg
     
-    def posterior(self, parties, speakers, text_vectorized, leave_out = True):
+    
+    
+    
+    
+    def _posterior(self, parties, speakers, text_vectorized, leave_out = True, low_memory = True):
         """
         
 
@@ -133,6 +135,10 @@ class ModelPolarization:
         leave_out : bool, optional
             Whether to calculate the leave-out estimate. The default is True.
             If False - compute plug in estimate of posterior, i.e. same for all speakers
+        low_memory: bool, optional
+            control whether the computation is memory-efficient (through a for loop on a dictionary, 
+            using sparse arrays or processing-time efficient (using vectorization on np.array)
+            default is True
 
         Returns
         -------
@@ -142,23 +148,50 @@ class ModelPolarization:
         """
         
         if leave_out:
-            #leave out estimate (i.e. for each speaker posterior calculated EXCLUDING his vocabulary)
-            posteriors = dict()
-            for speaker in np.unique(speakers): #compute for each speaker
-                ind = (speakers != speaker) #indices of all speakers but the current one
-                denominator = text_vectorized[ind].sum(axis = 0) #phrase counts for all speakers but the current one
-                numerator = text_vectorized[(parties == self.party[0]) & ind].sum(axis = 0) #same as above but only party 0
-                posteriors[speaker] = numerator/denominator #calculate posterior
-                posteriors[speaker] = np.nan_to_num(posteriors[speaker], nan = 0.5, copy = False)
+        
+            if low_memory:
+                #this methodis more memory efficient, but takes longer processing time:
+            
+                #leave out estimate (i.e. for each speaker posterior calculated EXCLUDING his vocabulary)
+                posteriors = dict()
+                for speaker in np.unique(speakers): #compute for each speaker
+                    ind = (speakers != speaker) #indices of all speakers but the current one
+                    denominator = text_vectorized[ind].sum(axis = 0) #phrase counts for all speakers but the current one
+                    numerator = text_vectorized[(parties == self.party[0]) & ind].sum(axis = 0) #same as above but only party 0
+                    posteriors[speaker] = numerator/denominator #calculate posterior
+                    posteriors[speaker] = np.nan_to_num(posteriors[speaker], nan = 0.5, copy = False)
+                #return a dict
+            else:
+                
+                #this method is vectorized, but takes up more memory
+                text_vectorized = text_vectorized.toarray() #convert sparse to normal
+                denominators = text_vectorized.sum(axis = 0) - text_vectorized #sum of all phrases for each excluding each
+                p0 = text_vectorized.copy()
+                p0[parties == self.party[1]] = 0 #subtract individual counts only when party is p0
+                numerators = text_vectorized[parties == self.party[0]].sum(axis = 0) - p0
+                posteriors = numerators/denominators
+                posteriors = np.nan_to_num(posteriors, nan = 0.5, copy = False)
+                #return an array
+                
         else:
+            
             #plug in estimate
             denominator = text_vectorized.sum(axis = 0) #phrase counts for all speakers
             numerator = text_vectorized[parties == self.party[0]].sum(axis = 0) #phrase counts for party 0
             posteriors = defaultdict(lambda: numerator/denominator) #calculate posterior
+                
+            
+        
         
         return posteriors
     
-    def polarization(self, parties, speakers, text_vectorized, normalize = False, **kwargs):
+    
+    
+    
+    
+    
+    def _polarization(self, parties, speakers, text_vectorized, normalize = False, 
+                      low_memory = True, **kwargs):
         """
         
 
@@ -172,6 +205,11 @@ class ModelPolarization:
             vectorized text.
         normalize : bool, optional
             DESCRIPTION. The default is False.
+        low_memory: bool, optional
+            control whether the computation is memory-efficient (through a for loop on a dictionary, 
+            or processing-time efficient (using vectorization).
+            default is True
+
 
         Returns
         -------
@@ -181,27 +219,56 @@ class ModelPolarization:
         """
         c_mat = text_vectorized.multiply(1/text_vectorized.sum(axis = 1)) #normalize counts into individual probabilities
         c_mat = np.nan_to_num(c_mat, copy = False, nan = 0.5) #convert missing to 0.5s
-        c_mat = c_mat.tocsr()
-        posterior = self.posterior(parties, speakers, text_vectorized, **kwargs) #get posterior
-        
-        p_scores = np.zeros(c_mat.shape[0])
         
         
-        
-        for speaker in np.unique(speakers):
-            ind = speakers == speaker
-            post = np.array(posterior[speaker]).flatten()
-            #depending on the party, posterior is either posterior or 1 -posterior
-            if np.unique(parties[ind])[0] != self.party[0]:
-                post = 1 - post
-            counts = np.array(c_mat[ind].todense())
-            p_scores[ind] = np.sum(counts * post, axis = 1) 
+        if low_memory:
+            #memory-efficient version - requires id:count dictionary as input, return by the _posterior method
+            #if low_memory set to True
+            c_mat = c_mat.tocsr() #convert to csr
+            posterior = self._posterior(parties, speakers, text_vectorized, low_memory = low_memory) #get posterior
+            p_scores = np.zeros(c_mat.shape[0]) #store polarization scores
             
+            for speaker in np.unique(speakers):
+                ind = speakers == speaker
+                post = np.array(posterior[speaker]).flatten()
+                #depending on the party, posterior is either posterior or 1 -posterior
+                if np.unique(parties[ind])[0] != self.party[0]:
+                    post = 1 - post
+                counts = np.array(c_mat[ind].todense())
+                p_scores[ind] = np.sum(counts * post, axis = 1) #rowwise dot product
+        else:
+            #vectorized version - requires array as input:
+            #depending on the party, posterior is either posterior or 1 -posterior
+            c_mat = c_mat.toarray() #convert to csr
+            posterior = self._posterior(parties, speakers, text_vectorized, low_memory = low_memory) #get posterior
+            p_scores = np.zeros(c_mat.shape[0]) #store polarization scores
+            posterior[parties != self.party[0]] = 1 - posterior[parties != self.party[0]] #SUBTRACTION OF ONE!
+            p_scores = np.sum(c_mat * posterior, axis = 1) #rowwise dot product
+            
+            
+                
         p_scores[np.array(c_mat.sum(axis = 1) == 0).flatten()] = 0.5 #if no phrase counted = 0.5 similarity (neutral)  
          
         return p_scores
+    
+    def get_posteriors(self, parties, speakers, text):
+        #convert to numpy:
+        parties = np.array(parties, dtype = str)
+        speakers = np.array(speakers, dtype = str)
+        text = np.array(text, dtype = str)
+        text_vectorized = self._vectorize_text(text)
+        parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
+        posterior = self._posterior(parties_a, speakers_a, text_vectorized_a, low_memory = False)
+        posterior = np.mean(posterior, axis = 0)
+        posterior = dict(zip(self.vectorizer.get_feature_names(), posterior))
+        
+        return posterior
+        
+    
+    
+    
 
-    def sample(self, parties, sample_size = 0.1, stratified = False):
+    def _sample(self, parties, sample_size = 0.1, stratified = False):
 
         if stratified:
             prob_p0 = (np.sum(parties == self.party[0])/parties.shape[0])/np.sum(parties == self.party[0])
@@ -218,7 +285,7 @@ class ModelPolarization:
         return sample_inds
 
     
-    def confidence_intervals(self, samples, res):
+    def _confidence_intervals(self, samples, res):
         
         #sample size and point estimate
         estimate = res["point"]
@@ -245,7 +312,10 @@ class ModelPolarization:
         
         return stats
     
-    def estimate(self, parties, speakers, text, level = "aggregate", conf_int = None, 
+    
+    
+    def estimate(self, parties, speakers, text, text_id = None,
+                 level = "aggregate", conf_int = None, 
                  sample_size = 0.1, **kwargs):
         
         #convert to numpy:
@@ -253,11 +323,12 @@ class ModelPolarization:
         speakers = np.array(speakers, dtype = str)
         text = np.array(text, dtype = str)
         #vectorize text:
-        text_vectorized = self.vectorize_data(text)
+        #first run - fit; next runs (CI) - just transform
+        text_vectorized = self._vectorize_text(text)
         
         if level == "aggregate": #aggregate estimates
-            parties_a, speakers_a, text_vectorized_a = self.aggregate(parties, speakers, text_vectorized)
-            p_scores = self.polarization(parties_a, speakers_a, text_vectorized_a, **kwargs)
+            parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
+            p_scores = self._polarization(parties_a, speakers_a, text_vectorized_a, low_memory = False, **kwargs)
             #store results
             res = dict()
         
@@ -276,38 +347,43 @@ class ModelPolarization:
                 samples = []
                 
                 for i in range(conf_int):
-                    samp_inds = self.sample(parties, sample_size = 0.1, stratified = True) #get sample of ids
+                    samp_inds = self._sample(parties, sample_size = 0.1, stratified = True) #get sample of ids
                     speakers_s = speakers[samp_inds]
                     parties_s = parties[samp_inds]
                     text_s = text[samp_inds]
                     #apply recursively:
                     samples.append(self.estimate(parties_s, speakers_s, text_s, 
                                                  conf_int = None, level = "aggregate")) 
-                res = self.confidence_intervals(samples, res) #compute confidence intervals
+                res = self._confidence_intervals(samples, res) #compute confidence intervals
                 return res
             
             return res
                     
         elif level == "speaker": #polarization for each individual user
-            parties_a, speakers_a, text_vectorized_a = self.aggregate(parties, speakers, text_vectorized)
-            p_scores = self.polarization(parties_a, speakers_a, text_vectorized_a, **kwargs)
+            parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
+            p_scores = self._polarization(parties_a, speakers_a, text_vectorized_a, low_memory = True, **kwargs)
             
             return p_scores, speakers_a
             
             
-        elif level == "speech": #polarization for each individual speech
-            p_scores = self.polarization(parties, speakers, text_vectorized, normalize = True, **kwargs)
-            return p_scores, parties, speakers
+        elif level == "speech" and text_id is not None: #polarization for each individual speech
+            text_id = np.array(text_id)
+            p_scores = self._polarization(parties, speakers, text_vectorized,
+                                          normalize = True, low_memory = True, **kwargs)
+            return p_scores, text_id
 
             
         
 #test 
 if __name__ == "__main__":
+    """
+    
     import sys
     sys.path.append("..")
     from twitter_tools.utils import read_files
     import json 
     import os
+    import time
     path = "/home/piotr/projects/twitter/data/clean"
     nonpolish_ids = json.load(open(os.path.join(path, "non_polish_ids.json"), "r"))
     from functools import partial
@@ -331,6 +407,9 @@ if __name__ == "__main__":
                                                  "polish": float, "lemmatized":str}, 
                                filter_fun = partial(data_filter, n = 0))):
         pass
-    mod = ModelPolarization(parties = ["gov","opp"], limit = 0)
-    res = mod.estimate(dat["source"], dat["user-id_str"], dat["lemmatized"], level = "speech", leave_out = True)
-    plt.hist(res[0])
+    mod = ModelPolarization(parties = ["gov","opp"], limit = 10)
+    start = time.time()
+    res = mod.estimate(dat["source"], dat["user-id_str"], dat["lemmatized"], level = "aggregate", leave_out = True, conf_int = 100)
+    print(f'Evaluation time{time.time() - start}')
+    print(res)
+    """

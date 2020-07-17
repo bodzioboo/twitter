@@ -21,7 +21,7 @@ from tqdm import tqdm
 from tweepy import Cursor
 import numpy as np
 import dask.array as da
-import pdb
+from .utils import check_errors
 
 
 
@@ -51,19 +51,27 @@ class Scraper:
         
         #Log setup
         self.api = api
-        self.logger = logging.getLogger()
-        self.logger.setLevel(logging.DEBUG)
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)
+        self.logger.propagate = False
+        fmt = logging.Formatter('%(asctime)s: %(message)s')
+        sh = logging.StreamHandler()
+        sh.setLevel(logging.ERROR)
+        sh.setFormatter(fmt)
+        self.logger.addHandler(sh)
         if path_log:
-            formatter = logging.Formatter('%(asctime)s: %(message)s')
-            handler = logging.FileHandler(path_log)
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
+            fh = logging.FileHandler(path_log)
+            fh.setLevel(logging.INFO)
+            fh.setFormatter(fmt)
+            self.logger.addHandler(fh)
         self.logger.info("Initialized")
         
             
             
     def scrape(self, api_method, path, record = None, min_date = None, 
-               limit = 0, output = "csv", cols = None, verbose = False, **kwargs):
+               limit = 0, output = "csv", cols = None, verbose = False, 
+               date_split = False,
+               **kwargs):
         """
         Generic method for scraping. Takes an api method and 
         uses Tweepy Cursor to collect the data.
@@ -72,6 +80,8 @@ class Scraper:
         ----------
         api_method : tweepy.api method
             Which API method to use in Cursor
+        path: str
+            directory to write results in
         record : dict
             Record of tweets scraped in the past. Keys are user ids, values are lists
             of twitter ids
@@ -113,14 +123,18 @@ class Scraper:
         #updated after each iteration in first scrape so that the cursor goes
         #deeper whenever it's called
         maxid = None
-            
         
         count = 0 #store tweets obtained
+        error_count = 0 #count errors
+            
+        
+        #boundary dates:
         if min_date is None: 
             min_date = datetime.datetime.now() - datetime.timedelta(hours = 36)
         tweet_date = min_date
         
-        error_count = 0
+            
+
         
         
         while tweet_date >= min_date:
@@ -134,6 +148,7 @@ class Scraper:
                 new = 0
                 for tweet in cursor: #iterate over limit
                     tweet_date = tweet.created_at
+                    
                     if tweet.id_str not in record and tweet.created_at >= min_date:
                         tweets_jsons.append(tweet._json)
                         record.append(tweet.id_str)
@@ -145,7 +160,7 @@ class Scraper:
                 
                 if new != 0:
                     self.logger.info("Scraped {} new tweets".format(new))
-                    writer(tweets_jsons) #write to file
+                    writer(tweets_jsons, date_split = date_split) #write to file
                 
                 elif new == 0:
                     #if there were no tweets to be evaluated, break while and return
@@ -202,24 +217,25 @@ class Scraper:
         return newDict
     
     
-    def _writeCSV(self, tweets_jsons, path_csv, cols = None):
+    def _writeCSV(self, tweets_jsons, path_csv, cols = None, date_split = False):
         """
-        This method converts list of traversed .json files 
-        collected by the scraper into 
-        a pandas DataFrame and writes it to a csv file.
-    
-    
+        
+
         Parameters
         ----------
-        tweets_dict : list of dictionaries
-            Output of a scraping method.
-    
-        path_csv: string
-            path to write the csv file to
+        tweets_jsons : list of dict
+            list of Twitter API jsons
+        path_csv : str
+            path to write output to
+        cols : list, optional
+            columns to write. The default is None.
+        date_split : bool, optional
+            Should files be split by date. The default is False.
+
         Returns
         -------
-        None
-    
+        None.
+
         """
         assert(type(tweets_jsons) == list)
         if not tweets_jsons:
@@ -236,27 +252,60 @@ class Scraper:
             json_traversed.append(self._traverse_json(tweet_json, dict()))
         df = pd.DataFrame(json_traversed, dtype = str) #convert to dataframe with default string type
         
+        df = check_errors(df)
         
+        if date_split: #split by date
+            
+            date = pd.to_datetime(df.created_at).dt.date #get date series
+            date = date.apply(lambda x: x.strftime('%Y_%m_%d'))
+            for dt, df in df.groupby(date):
+                
+                folder, file = os.path.split(path_csv)
+                file_date = file.split('.')[0] + '_' + dt + '.csv'
+                subpath = os.path.join(folder, file_date)
+                
+                if not os.path.isfile(subpath):
+                    #create new dataframe
+                    if cols:
+                        target = pd.DataFrame(columns = cols, dtype = str)
+                    else:
+                        target = pd.DataFrame(columns = df.columns, dtype = str)
+            
+                    #write new csv:
+                    self.logger.info("Creating file {}".format(subpath))
+                    target.to_csv(subpath, header = True)
+                else:
+                    #read the target:
+                    target = pd.read_csv(subpath, nrows = 0, index_col = 0,
+                                         header = 0, dtype = str)  
+            
+                
+                self.logger.info("Appending to file {}. Got {} columns. Writing {}.".format(subpath, len(df.columns), len(target.columns)))
+                df = df.reindex(columns = target.columns) #coerce to target shape
+                df.to_csv(subpath, mode = "a", header = False)
+                
+        
+        else: #write to one file
     
-        if not os.path.isfile(path_csv):
-            #create new dataframe
-            if cols:
-                target = pd.DataFrame(columns = cols, dtype = str)
+            if not os.path.isfile(path_csv):
+                #create new dataframe
+                if cols:
+                    target = pd.DataFrame(columns = cols, dtype = str)
+                else:
+                    target = pd.DataFrame(columns = df.columns, dtype = str)
+        
+                #write new csv:
+                self.logger.info("Creating file {}".format(path_csv))
+                target.to_csv(path_csv, header = True)
             else:
-                target = pd.DataFrame(columns = df.columns, dtype = str)
-    
-            #write new csv:
-            self.logger.info("Creating file {}".format(path_csv))
-            target.to_csv(path_csv, header = True)
-        else:
-            #read the target:
-            target = pd.read_csv(path_csv, nrows = 0, index_col = 0,
-                                 header = 0, dtype = str)  
-    
+                #read the target:
+                target = pd.read_csv(path_csv, nrows = 0, index_col = 0,
+                                     header = 0, dtype = str)  
         
-        self.logger.info("Appending to file {}. Got {} columns. Writing {}.".format(path_csv, len(df.columns), len(target.columns)))
-        df = df.reindex(columns = target.columns) #coerce to target shape
-        df.to_csv(path_csv, mode = "a", header = False)
+            
+            self.logger.info("Appending to file {}. Got {} columns. Writing {}.".format(path_csv, len(df.columns), len(target.columns)))
+            df = df.reindex(columns = target.columns) #coerce to target shape
+            df.to_csv(path_csv, mode = "a", header = False)
         
         
         
@@ -382,7 +431,8 @@ class FollowerScraper(Scraper):
         
     
     def scrape(self, sample, path, min_date = None, 
-               limit = 0, cols = None, output = "csv"):
+               limit = 0, cols = None, output = "csv", 
+               date_split = False, **kwargs):
         """
         Scrape tweets from a list of user IDs bweteen a specified date to now and
         write them to output file.
@@ -440,7 +490,8 @@ class FollowerScraper(Scraper):
                                                        min_date = min_date,
                                                        limit = limit, 
                                                        output = output, 
-                                                       cols = cols)
+                                                       cols = cols, 
+                                                       date_split = date_split)
                 
                 self.logger.info("Scraped user ID {}. Number of tweets {}.".format(user_id, count))
                 total_new += count

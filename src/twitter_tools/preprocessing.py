@@ -21,6 +21,7 @@ import pdb
 logger = logging.getLogger("__main__")
 
 
+
 class Lemmatizer:
     def __init__(self, stopwords = None, use_gpu = True, 
                  processors = "tokenize,mwt,pos,lemma", **kwargs):
@@ -79,7 +80,7 @@ class LanguageTagger:
 class Preprocessor:
     def __init__(self, keep_cols = None, chunksize = 100000, record_path = None, **kwargs):
         
-        self.cols = ["full_text","created_at","id_str", "user-id_str"]
+        self.cols = ["full_text","created_at","id_str", "user-id_str", "retweet"]
 
         if keep_cols:
             self.cols = list(set(self.cols + keep_cols))
@@ -94,17 +95,20 @@ class Preprocessor:
     def preprocess(self, df):
         
         
+        
         df = check_errors(df) #error check (column format etc)
+        
+        df = df[df.lang.isin(['pl','und'])] #filter Polish/undefined language
         
         if df.empty:
             return None
         
+        df = tag_retweets(df) #tag retweets
+        
         df = df[self.cols] #keep important columns
         
-        df = tag_retweets(df) #tag retweets
-
         #clean mentions, interp, etc.:
-        df["preprocessed"] = df["full_text"].apply(lambda x: clean_tweets(x)) 
+        df["preprocessed"] = df["full_text"].astype(str).apply(lambda x: clean_tweets(x)) 
         
         #drop empty rows before lemmatizing:
         indx = (df["preprocessed"] != "")  & (df["preprocessed"].notna())

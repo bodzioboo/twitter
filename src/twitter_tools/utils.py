@@ -16,11 +16,12 @@ import enchant
 import stanza
 from nltk.metrics.distance import edit_distance
 import logging
-import pdb
 from tqdm import tqdm
+import pdb
 
 #use logger of whatever file it's executed from
-logger = logging.getLogger("__main__")
+logger = logging.getLogger(__name__)
+logger.propagate = False
 
 def csv_bind(file1, file2, check_headers = True):
     
@@ -279,7 +280,7 @@ def tag_retweets(df):
 
     """
     df["retweet"] = df["full_text"].str.startswith("RT")
-    df["full_text"] = df["full_text"].apply(lambda x: re.sub("RT", "", x))
+    df.loc[df.retweet,'full_text'] = df.loc[df.retweet,'retweeted_status-full_text']
     return df
 
 
@@ -467,6 +468,51 @@ def filter_data(path_source, path_target, nfiles, filter_fun, **kwargs):
             data.to_csv(path_target,  mode = "a", header = False)
         else:
             data.to_csv(path_target, mode = "w")
+            
+            
+def batch(iterable, n=1):
+    l = len(iterable)
+    for ndx in range(0, l, n):
+        yield iterable[ndx:min(ndx + n, l)]
+        
+        
+        
+def tweets_datesplit(path_source:str, dir_target:str = None, chunksize:int = 100000):
+    
+    dir_source, file_source = os.path.split(path_source)
+    
+    if dir_target is None:
+        dir_target = dir_source
+        
+    for df in tqdm(pd.read_csv(path_source, index_col = 0, 
+                          dtype = str, iterator = True, error_bad_lines=False, chunksize=chunksize)):
+        
+        df = check_errors(df)
+        
+        date = pd.to_datetime(df['created_at']).dt.date
+            
+        
+        for day, df in df.groupby(date):
+            
+            file_target = file_source.split('.')[0] + '_' + day.strftime('%Y_%m_%d') + '.csv'
+            
+            path_target = os.path.join(dir_target, file_target)
+            
+            if os.path.isfile(path_target):
+                
+                df.to_csv(path_target, mode = 'a', header = False)
+            
+            else:
+                
+                df.to_csv(path_target)
+            
+                
+                
+                
+if __name__ == "__main__":
+    path_gov = '/media/piotr/SAMSUNG/data/gov/gov_tweets.csv'
+    tweets_datesplit(path_gov, chunksize = 100000)
+    
         
 
     
