@@ -32,7 +32,7 @@ class Scraper:
     This is a generic class containing some methods for scrapering tweets
     """
     
-    def __init__(self, api, path_log = None):
+    def __init__(self, api, path_log:str = None):
         """
         
 
@@ -68,9 +68,10 @@ class Scraper:
         
             
             
-    def scrape(self, api_method, path, record = None, min_date = None, 
-               limit = 0, output = "csv", cols = None, verbose = False, 
-               date_split = False,
+    def scrape(self, api_method, path:str, record:dict = None, 
+               min_date:datetime.datetime = None, 
+               limit:int = 0, output:str = "csv", cols:list = None, 
+               verbose:bool = False, date_split:bool = False,
                **kwargs):
         """
         Generic method for scraping. Takes an api method and 

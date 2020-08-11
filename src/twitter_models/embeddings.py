@@ -15,17 +15,15 @@ import itertools
 from sklearn.metrics import silhouette_score
 import logging
 from collections import defaultdict
-from sklearn.manifold import TSNE
-import seaborn as sns
 import pdb
 from nltk.cluster import KMeansClusterer
 from nltk.cluster.util import cosine_distance
-
+import gc
 
 class SentenceEmbeddings:
     
     
-    def __init__(self, path_embeddings, a = 10e-3, num_workers = 4, dask_split = 10):
+    def __init__(self, path_embeddings, a = 10e-3, ncomp = 1, num_workers = 4, dask_split = 10):
         self.path_embeddings = path_embeddings #path to txt file with the embeddings
         self.a = a  #normalizing constant for weighting 
         self.num_workers = num_workers #number of workers for dask operations
@@ -36,46 +34,67 @@ class SentenceEmbeddings:
         self.word_embed = dict() #dict of word embeddings
         self.u = None #left singular vector of the sentence embedding matrix
         self.vocab = None #freq dist of the text
+        self.ncomp = ncomp #number of components to remove in SVD
         
-    def fit(self, text):
+    def fit(self, text:list):
         """
-        Compute sentence embeddings and return them.
+        Obtain weights and first principal component
 
         Parameters
         ----------
-        text : itereable of strings.
+        text : list
+            tokenized text.
 
         Returns
         -------
-        sent_embed : np.array
+        self
 
         """
-        
-        #TOKENIZE:
-        text = [elem.split() for elem in text]
-        
         #PROBABILITY WEIGHTS:
         #compute inverse probability weights
         weights = self._get_weights(text)
         
         #WORD EMBEDDINGS:
+        self.logger.debug("Reading sentence embeddings")
         self.word_embed.update(self._get_embeddings_words(self.vocab))
         
         #SENTENCE EMBEDDINGS:
-        self.logger.debug(f"Computing sentence embeddings.")
+        self.logger.debug("Computing sentence embeddings.")
         sent_embed = self._get_embeddings_sent(text, self.word_embed, weights) #get sentence embeddings
         
         if self.u is None: #this is kept in case of re-fitting (i.e. using old svd with new vocabulary)
-            self.u, _, _ = randomized_svd(sent_embed, 1) #get left singular vector
-            
-        sent_embed = self._remove_pc(sent_embed) #remove first principal component
+            self.u, _, _ = randomized_svd(sent_embed.T, self.ncomp) #get left singular vector of transposed
         
         
-        return sent_embed
+        return self
     
-    def predict(self, text:list, refit:bool = False):
+    
+    def transform(self, text):
         """
-        Compute sentence embeddings based on fitted data
+        Compute sentence embeddings vectors
+
+        Parameters
+        ----------
+        text : list
+            tokenized text.
+
+        Returns
+        -------
+        sent_embed : np.array
+            sentence embeddings.
+
+        """
+        weights = self._get_weights(text, refit = False)
+        sent_embed = self._get_embeddings_sent(text, self.word_embed, weights)
+        if self.ncomp > 0:
+            sent_embed = self._remove_pc(sent_embed)
+        return sent_embed
+        
+        
+        
+    def fit_transform(self, text:list, refit:bool = False):
+        """
+        Peform fitting and return sentence embedding vectors.
 
         Parameters
         ----------
@@ -90,37 +109,17 @@ class SentenceEmbeddings:
             DESCRIPTION.
 
         """
-        
-        if refit: #obtain complete word embeddings for new data; 
-            sent_embed = super().fit(text)
-        else: #use word vectors loaded at fitting
-            text = [elem.split() for elem in text]
-            weights = self._get_weights(text)
-            sent_embed = self._get_embeddings_sent(text, self.word_embed, weights)
-            sent_embed = self._remove_pc(sent_embed)
-            
+        self.fit(text)
+        sent_embed = self.transform(text)
         return sent_embed
-    
-    def plot(self, text, **kwargs):
-        """
-        Visualize sentence embeddings using tSNE
-        """
         
-        embeds = self.fit(text)
-        tsne = TSNE()
-        dat = tsne.fit_transform(embeds)
-        sns.scatterplot(dat[:,0], dat[:,1], **kwargs)
-        plt.title("t-SNE projection of sentence embeddings")
-        
-        
-        
-    
     
     def _get_embeddings_sent(self, text, embed, weights):
         
         """
         Obtain sentence embeddings in accordance with Arora et al. 2017
         """
+        
         #convert to defaultdict so empty array always returned
         embed = defaultdict(lambda: np.array([]), embed) 
         
@@ -139,24 +138,40 @@ class SentenceEmbeddings:
                 res = (embedding.T @ weight)/weight.shape[0] #weighted average of constituent vectors
             sent_embed.append(res)
         #bind into one matrix:
-        sent_embed = np.array(sent_embed).T
+        sent_embed = np.array(sent_embed)
+        self.logger.debug(f'Calculated sentence embeddings. Shape {sent_embed.shape}')
         
         return sent_embed
     
         
     
-    def _remove_pc(self, sent_embed):
+    def _remove_pc(self, sent_embed: np.array):
         """
-        Remove the first principal component from the embedding matrix
+        Remove the first principal component
+        Parameters
+        ----------
+        sent_embed : np.array [n_samples, emb_dim]
+            Array of sentence embeddings.
+
+        Returns
+        -------
+        sent_embed : np:array [n_samples, emb_dim]
+        Array of sentence embeddings after removing first principal component.
 
         """
-        n_features, n_samples = sent_embed.shape #reverse order, since it's transposed
-        if n_samples >= self.dask_split:
-            sent_embed = da.from_array(sent_embed, chunks = (n_samples, int(round(n_features/self.dask_split))))
+        sent_embed = sent_embed.T #transpose
+        emb_dim, n_samples = sent_embed.shape #get shape for chunking
+        if n_samples > self.dask_split:
+            j_chunk =  int(n_samples/self.dask_split) #get chunk size
         else:
-            sent_embed = da.from_array(sent_embed)
+            j_chunk = n_samples
+        sent_embed = da.from_array(sent_embed, chunks = (emb_dim, j_chunk))
+
+        #remove first principal component and transpose back
         sent_embed = (sent_embed - self.u @ self.u.T @ sent_embed).T
-        sent_embed = sent_embed.compute(num_workers = self.num_workers) #store first principal component
+            
+        #run the operations
+        sent_embed = sent_embed.compute(num_workers = self.num_workers)
         
         return sent_embed
 
@@ -199,12 +214,16 @@ class OutlierDetector(SentenceEmbeddings):
         
     
     def fit(self, text):
-        embeddings = super().fit(text)
+        super(OutlierDetector, self).fit(text)
+        embeddings = super(OutlierDetector, self).transform(text)
         self.clf.fit(embeddings)
         return self
     
     def predict(self, text, refit = False):
-        embeddings = super().predict(text, refit = refit)
+        if refit:
+            embeddings = super(OutlierDetector, self).fit_transform(text)
+        else:
+            embeddings = super(OutlierDetector, self).transform(text)
         scores = self.clf.predict(embeddings)
         return scores
         
@@ -230,7 +249,8 @@ class KTopicModel(SentenceEmbeddings):
             Text to be clustered.
         """
         
-        sent_embed = super().fit(text)
+        super(KTopicModel, self).fit(text)
+        sent_embed = super(KTopicModel, self).transform(text)
         
         self.cluster.fit(sent_embed) #cluster
         
@@ -254,7 +274,10 @@ class KTopicModel(SentenceEmbeddings):
         lbl : iterable
 
         """
-        sent_embed = super().predict(text, refit = refit)
+        if refit:
+            sent_embed = super(KTopicModel, self).fit_transform(text)
+        else:
+            sent_embed = super(KTopicModel, self).transform(text)
         
         #either return the exact cluster or cosine similarity to each of the clusters
         if return_closest:
@@ -288,9 +311,7 @@ class KTopicModel(SentenceEmbeddings):
         """
         
         lbl = self.predict(text, refit = refit, return_closest = True)
-        text = [word.split() for word in text]
-        weights = self._get_weights(text, refit = refit)
-        sent_embed = self._get_embeddings_sent(text, self.word_embed, weights).T
+        sent_embed = super().transform(text)
         score = silhouette_score(sent_embed, lbl, 
                                  sample_size = sample_size, 
                                  random_state = 1234, **kwargs)
@@ -304,11 +325,11 @@ class DBSCANTopics(SentenceEmbeddings):
         self.cluster = DBSCAN(eps, min_samples, metric = 'cosine')
         
     def fit(self, text:list):
-        sent_embed = super().fit(text)
+        sent_embed = super().fit_transform(text)
         self.cluster.fit(sent_embed) #cluster
     
     def predict(self, text:list):
-        sent_embed = super().fit(text)
+        sent_embed = super().transform(text)
         lbl = self.cluster.predict(sent_embed) #cluster
         return lbl
     
@@ -320,12 +341,15 @@ class KTopicModelCosine(SentenceEmbeddings):
         self.cluster = KMeansClusterer(k, distance = cosine_distance)
         
     def fit(self, text:list):
-        sent_embed = super().fit(text)
+        sent_embed = super().fit_transform(text)
         self.cluster.cluster_vectorspace(sent_embed)
         
     def predict(self, text:list, return_closest:bool = False, refit:bool = False):
         
-        sent_embed = super().predict(text, refit = refit)
+        if refit:
+            sent_embed = super().fit_transform(text)
+        else:
+            sent_embed = super().transform(text)
         
         #either return the exact cluster or cosine similarity to each of the clusters
         if return_closest:
@@ -340,9 +364,8 @@ class KTopicModelCosine(SentenceEmbeddings):
 
         
         lbl = self.predict(text, refit = refit, return_closest = True)
-        text = [word.split() for word in text]
         weights = self._get_weights(text, refit = refit)
-        sent_embed = self._get_embeddings_sent(text, self.word_embed, weights).T
+        sent_embed = self._get_embeddings_sent(text, self.word_embed, weights)
         score = silhouette_score(sent_embed, lbl, 
                                  sample_size = sample_size, 
                                  random_state = 1234, **kwargs)
@@ -359,12 +382,20 @@ class PolarizationEmbeddings(SentenceEmbeddings):
     
     def compute(self, text, source):
         
-        sent_embed = super().fit(text)
-        p0_p0 = self._similarity(sent_embed[source == self.party[0]], sent_embed[source == self.party[0]])
-        p0_p1 = self._similarity(sent_embed[source == self.party[0]], sent_embed[source == self.party[1]])
-        p1_p0 = self._similarity(sent_embed[source == self.party[1]], sent_embed[source == self.party[0]])
-        p1_p1 = self._similarity(sent_embed[source == self.party[1]], sent_embed[source == self.party[1]])
+        sent_embed = super().fit_transform(text) #get sentence embeddings
+        source = np.array(source, dtype = str) #convert source to np array
         
+        gc.collect()
+        
+        #compute similarities
+        P0 = np.array(sent_embed[source == self.party[0]], copy = True)
+        P1 = np.array(sent_embed[source == self.party[1]], copy = True)
+        p0_p0 = self._similarity(P0, P0)
+        p0_p1 = self._similarity(P0, P1)
+        p1_p0 = self._similarity(P1, P0)
+        p1_p1 = self._similarity(P1, P1)
+        
+        #get polarization
         p0_pol = np.sum(source == self.party[0])/len(source) * (p0_p0 - p0_p1)
         p1_pol = np.sum(source == self.party[1])/len(source) * (p1_p1 - p1_p0)
         
@@ -373,23 +404,15 @@ class PolarizationEmbeddings(SentenceEmbeddings):
         return polarization
         
     def _similarity(self, arr1, arr2):
-        arr1 = da.from_array(arr1, chunks = (10000, arr1.shape[1]))
-        arr2 = da.from_array(arr2, chunks = (10000, arr2.shape[1]))
-        numer = arr1 @ arr2.T
-        denom = np.outer(np.linalg.norm(arr1, axis = 1), np.linalg.norm(arr2, axis = 2))
-        sims = np.mean(numer/denom)
-        sims = sims.compute(num_workers = self.num_workers)
-        return sims
+        A = da.from_array(arr1, chunks = (10000, arr1.shape[1]))
+        B = da.from_array(arr2, chunks = (10000, arr2.shape[1]))
+        sims = (A @ B.T)/(np.outer(np.linalg.norm(A, axis = 1), np.linalg.norm(B, axis = 1)))
+        return sims.mean().compute(num_workers = self.num_workers)
     
-    
+
     
 if __name__ == "__main__":
-    import pandas as pd
-    import matplotlib.pyplot as plt
-    test = pd.read_csv('/home/piotr/projects/twitter/test/test_data.csv', index_col = 0)
-    path_embeddings = '/home/piotr/nlp/cc.pl.300.vec'
-    model = PolarizationEmbeddings(path_embeddings, parties = ['gov', 'opp'])
-    res = model.compute(test.lemmatized.astype(str), test.source)
+    pass
 
     
     

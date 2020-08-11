@@ -9,7 +9,6 @@ Created on Tue Jul  7 16:32:53 2020
 import pandas as pd
 import networkx as nx
 from collections import defaultdict
-import pdb
 import logging
 
 logger = logging.getLogger(__name__)

@@ -8,9 +8,10 @@ Created on Thu May 28 18:35:12 2020
 
 import csv
 import pandas as pd
+import dask.dataframe as dd
 import itertools
 import os
-import datetime
+import datetime as dt
 import re
 import enchant
 import stanza
@@ -18,6 +19,7 @@ from nltk.metrics.distance import edit_distance
 import logging
 from tqdm import tqdm
 import pdb
+import numpy as np
 
 #use logger of whatever file it's executed from
 logger = logging.getLogger(__name__)
@@ -66,12 +68,12 @@ def drop_date(path_source, path_target, date):
                 
                 
             fmt = "%a %b %d %H:%M:%S +0000 %Y"
-            condition = datetime.datetime.strptime(date, "%Y/%m/%d")
+            condition = dt.datetime.strptime(date, "%Y/%m/%d")
                     #date is not text:
             redate = "[A-Z][a-z]{2} [A-Z][a-z]{2} \d{2} \d{2}:\d{2}:\d{2} \+\d{4} \d{4}"
             #pdb.set_trace()
             check = [elem for elem in check if re.match(redate, str(elem["created_at"]))]
-            check = [elem for elem in check if datetime.datetime.strptime(elem["created_at"],fmt) < condition]
+            check = [elem for elem in check if dt.datetime.strptime(elem["created_at"],fmt) < condition]
             
             length_out = len(check)
             
@@ -392,25 +394,104 @@ class SpellChecker:
             return None
         
         
-def read_files(path, ndays, prefixes = ["gov","opp"], dtype = None, filter_fun = None):
+def filter_date(name:str, start:str, end:str, 
+                regex:str = '\d{4}\_\d{2}\_\d{2}', fmt:str = '%Y_%m_%d'):
+    date = re.search(regex, name).group(0)
+    date, start, end = map(lambda x: dt.datetime.strptime(x, fmt), [date, start, end])
+    return date >= start and date <= end
+
+
+
+def read_dask(files:list, regex:str, filter_fun = None, **kwargs):
+    """
+    Returns dask array given a list of files.
+    """
+    ddf = dd.read_csv(files, include_path_column = 'source', **kwargs)
+    if 'Unnamed: 0' in ddf.columns:
+        ddf = ddf.drop(columns = ['Unnamed: 0'])
+    ddf[['source']] = ddf['source'].str.extract(regex, expand = True)
+    if filter_fun is not None:
+        ddf = filter_fun(ddf)
+    return ddf
+
+def read_pandas(files:list, regex:str, filter_fun = None, 
+                batch_size:int = 1, **kwargs):
+    """
+    Returns pandas iterator given a list of file.
+
+    Parameters
+    ----------
+    files : list
+        list of paths to files.
+    ndays : int
+        number of days to load.
+    filter_fun : function, optional
+        function to apply to the data. The default is None.
+    batch_size : int, optional
+        Batch size for the iterator. The default is 1 (day).
+    dtype : str, optional
+        Argument for pd.read_csv. The default is None.
+
+    Yields
+    ------
+    data : pd.DataFrame
+        dataframe for both sources for a given batch size.
+
+    """
+    prefixes = list(set([re.search(regex, f).group(0) for f in files]))
+    ndays = int(len(files)/len(prefixes))
+    for _ in range(ndays//batch_size):
+        data = pd.DataFrame() 
+        for prefix in prefixes:
+            n_newest = [elem for elem in files if prefix in elem][:batch_size]
+            for file in n_newest:
+                ind = files.index(file)
+                fname = files.pop(ind) #get filename
+                tmp = pd.read_csv(fname, index_col = 0, **kwargs)
+                tmp["source"] = prefix
+                data = data.append(tmp)
+        data.reset_index(inplace = True, drop = True)
+        if filter_fun:
+            data = filter_fun(data)
+        yield data
+        
+        
+def read_files(path:str, day_from:str, day_to:str, dtype:str = None,
+               filter_fun = None, regex:str = r'([a-z]+)(?=\_tweets)',
+               method:str = 'pandas', batch_size:int = 1, **kwargs):
     """
     
-    Iterator reading data
-    
+
     Parameters
     ----------
     path : str
-        path to the folder containing the files.
-    ndays : int
-        number of days to be read.
-    prefixes : list
-        Prefixes used to separate classes. The default is ["gov","opp"].
+        path to folder containing files.
+    day_from : str
+        date from which to load data %Y_%m_%d.
+    day_to : str
+        date to which to load data %Y_%m_%d.
+    dtype : str, optional
+        DESCRIPTION. The default is None.
+    filter_fun : TYPE, optional
+        DESCRIPTION. The default is None.
+    regex : str, optional
+        DESCRIPTION. The default is r'([a-z]+)(?=\_tweets)'.
+    method : str, optional
+        DESCRIPTION. The default is 'pandas'.
+    batch_size : int, optional
+        DESCRIPTION. The default is 1.
+
+    Raises
+    ------
+    ValueError
+        DESCRIPTION.
 
     Returns
     -------
     None.
 
     """
+
     
     if not os.path.exists(path):
         raise ValueError("Incorrect path")
@@ -418,26 +499,21 @@ def read_files(path, ndays, prefixes = ["gov","opp"], dtype = None, filter_fun =
     files = os.listdir(path)
     if not files:
         raise ValueError("Empty path")
-        
-        
-    files = sorted([fname for fname in files if "csv" in fname])
-    
-        
-    
-    for _ in range(ndays):
-        data = pd.DataFrame() 
-        for prefix in prefixes:
-            ind = files.index([elem for elem in files if prefix in elem][0])
-            tmp = pd.read_csv(os.path.join(path, files.pop(ind)), index_col = 0, dtype = dtype)
-            tmp["source"] = prefix
-            data = data.append(tmp)
-        data.reset_index(inplace = True, drop = True)
-        if filter_fun:
-            data = filter_fun(data)
-        yield data
 
+        
+    files = sorted([f for f in files if "csv" in f])
+    files = [os.path.join(path, f) for f in files if filter_date(f, start = day_from, end = day_to)]
     
-def filter_data(path_source, path_target, nfiles, filter_fun, **kwargs):
+        
+    if method == 'pandas':
+        return read_pandas(files = files, regex = regex, filter_fun = filter_fun, dtype = dtype,
+                    batch_size = batch_size, **kwargs)
+    elif method == 'dask':
+        return read_dask(files, regex = regex, filter_fun = filter_fun, dtype = dtype, **kwargs)
+        
+    
+    
+def filter_data(path_source:str, path_target:str, nfiles:int, filter_fun, **kwargs):
     """
     Extension of the function above that writes the files to one csv
 
@@ -471,7 +547,13 @@ def filter_data(path_source, path_target, nfiles, filter_fun, **kwargs):
             
             
 def batch(iterable, n=1):
-    l = len(iterable)
+    try:
+        l = len(iterable)
+    except:
+        try:
+            l = iterable.shape[0]
+        except:
+            raise(TypeError('Wrong iterable'))
     for ndx in range(0, l, n):
         yield iterable[ndx:min(ndx + n, l)]
         
@@ -507,7 +589,54 @@ def tweets_datesplit(path_source:str, dir_target:str = None, chunksize:int = 100
                 df.to_csv(path_target)
             
                 
-                
+class VectorDict:
+    def __init__(self):
+        self.matrix = None
+        self.keys = None
+    def read(self, path, dim, vocab = None):
+        """
+        Read vectors from text file.
+        path: str
+            path to vec file
+        dim: int
+            Dimensionality of the word vector
+        vocab: list
+            Vocabulary to use
+        
+        """
+        with open(path, 'r') as f:
+            vecs = [] #store vectors
+            keys = [] #store keys
+            for line in tqdm(f):
+                vec = line.split()
+                if len(vec) == dim + 1 and (vocab is None or vec[0] in vocab):
+                    keys.append(vec[0])
+                    vecs.append(np.array(vec[1:], dtype = np.float32))
+            self.matrix = np.array(vecs)
+            self.keys = np.array(keys)
+        return self
+            
+    def __getitem__(self, key):
+        if key not in self.keys:
+            raise(KeyError('Not a valid key'))
+        ind = np.where(self.keys == key)[0]
+        return self.matrix[ind]
+    
+    def _cosine_sim(self, vec1:np.array, vec2:np.array):
+        dots = vec1 @ vec2.T
+        norms = np.outer(np.linalg.norm(vec1, axis = 1), np.linalg.norm(vec2, axis = 1))
+        return dots/norms      
+    
+    def most_similar_by_vector(self, vector:np.array, n:int = 1):
+        comp = self._cosine_sim(self.matrix, vector)
+        indices = (-comp).argsort(axis = 0)[:n]
+        result = self.keys[indices]
+        return result
+    
+    def most_similar_by_word(self, word, n:int = 1):
+        vec = self.matrix[self.keys == word]
+        result = self.most_similar_by_vector(vec, n = n)
+        return result                
                 
 if __name__ == "__main__":
     path_gov = '/media/piotr/SAMSUNG/data/gov/gov_tweets.csv'

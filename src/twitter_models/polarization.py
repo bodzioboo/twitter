@@ -17,7 +17,6 @@ Created on Thu Apr 30 19:57:21 2020
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 import numpy as np
 import warnings
-from tqdm import tqdm
 warnings.filterwarnings('ignore')
 from collections import defaultdict
 from scipy.sparse import csr_matrix
@@ -52,6 +51,119 @@ class ModelPolarization:
             self.vectorizer = TfidfVectorizer(ngram_range = ngram_range, min_df = limit)
             
             
+    def estimate(self, parties, speakers, text, text_id = None,
+                 level = "aggregate", conf_int = None, 
+                 sample_size = 0.1, **kwargs):
+        """
+        Main function. Estimate partisanship according to Gentzkow's model.
+
+        Parameters
+        ----------
+        parties : TYPE
+            Party IDs.
+        speakers : TYPE
+            Speakers IDs.
+        text : TYPE
+            Texts.
+        text_id : TYPE, optional
+            Unique ID of each text. The default is None. Required when
+            level = 'speech'
+        level : TYPE, optional
+            Aggregation level. The default is "aggregate".
+        conf_int : int, optional
+            Number of confidence intervals. The default is None.
+        sample_size : float, optional
+            Sample size for confidence intervals. The default is 0.1.
+        **kwargs : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        TYPE
+            DESCRIPTION.
+
+        """
+        
+        #convert to numpy:
+        parties = np.array(parties, dtype = str)
+        speakers = np.array(speakers, dtype = str)
+        text = np.array(text, dtype = str)
+        #vectorize text:
+        #first run - fit; next runs (CI) - just transform
+        text_vectorized = self._vectorize_text(text)
+        
+        if level == "aggregate": #aggregate estimates
+            parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
+            p_scores = self._polarization(parties_a, speakers_a, text_vectorized_a, low_memory = False, **kwargs)
+            #store results
+            res = dict()
+        
+            #get sample sizes for both parties
+            res["n"] = {self.party[0]: np.sum(parties_a == self.party[0]), 
+                    self.party[1]: np.sum(parties_a == self.party[1])}
+
+
+            #get point estimate of polarization
+            gov = 0.5*(1/res["n"][self.party[0]]) * np.sum(p_scores[parties_a == self.party[0]])
+            opp = 0.5*(1/res["n"][self.party[1]]) * np.sum(p_scores[parties_a == self.party[1]])
+            res["point"] = gov + opp
+            
+            if conf_int:
+                assert(sample_size is not None) 
+                samples = []
+                
+                for i in range(conf_int):
+                    samp_inds = self._sample(parties, sample_size = 0.1, stratified = True) #get sample of ids
+                    speakers_s = speakers[samp_inds]
+                    parties_s = parties[samp_inds]
+                    text_s = text[samp_inds]
+                    #apply recursively:
+                    samples.append(self.estimate(parties_s, speakers_s, text_s, 
+                                                 conf_int = None, level = "aggregate")) 
+                res = self._confidence_intervals(samples, res) #compute confidence intervals
+                return res
+            
+            return res
+                    
+        elif level == "speaker": #polarization for each individual user
+            parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
+            p_scores = self._polarization(parties_a, speakers_a, text_vectorized_a, low_memory = True, **kwargs)
+            
+            return p_scores, speakers_a
+            
+            
+        elif level == "speech" and text_id is not None: #polarization for each individual speech
+            text_id = np.array(text_id)
+            p_scores = self._polarization(parties, speakers, text_vectorized,
+                                          normalize = True, low_memory = True, **kwargs)
+            return p_scores, text_id
+            
+            
+    def get_posteriors(self, parties, speakers, text):
+        """
+        Get posterior distribution of each word to evaluate word-wise partisanship.
+
+        """
+        parties = np.array(parties, dtype = str)
+        speakers = np.array(speakers, dtype = str)
+        text = np.array(text, dtype = str)
+        text_vectorized = self._vectorize_text(text)
+        parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
+        posterior = self._posterior(parties_a, speakers_a, text_vectorized_a, low_memory = False)
+        posterior = np.mean(posterior, axis = 0)
+        posterior = dict(zip(self.vectorizer.get_feature_names(), posterior))
+        
+        return posterior
+            
+    
+    def prefit(self, text):
+        """
+        Prefit vectorizer.
+        
+        """
+        self.vectorizer.fit(text)
+        return self
+    
     def _vectorize_text(self, text):
         """
         Parameters
@@ -251,18 +363,7 @@ class ModelPolarization:
          
         return p_scores
     
-    def get_posteriors(self, parties, speakers, text):
-        #convert to numpy:
-        parties = np.array(parties, dtype = str)
-        speakers = np.array(speakers, dtype = str)
-        text = np.array(text, dtype = str)
-        text_vectorized = self._vectorize_text(text)
-        parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
-        posterior = self._posterior(parties_a, speakers_a, text_vectorized_a, low_memory = False)
-        posterior = np.mean(posterior, axis = 0)
-        posterior = dict(zip(self.vectorizer.get_feature_names(), posterior))
-        
-        return posterior
+
         
     
     
@@ -314,65 +415,7 @@ class ModelPolarization:
     
     
     
-    def estimate(self, parties, speakers, text, text_id = None,
-                 level = "aggregate", conf_int = None, 
-                 sample_size = 0.1, **kwargs):
-        
-        #convert to numpy:
-        parties = np.array(parties, dtype = str)
-        speakers = np.array(speakers, dtype = str)
-        text = np.array(text, dtype = str)
-        #vectorize text:
-        #first run - fit; next runs (CI) - just transform
-        text_vectorized = self._vectorize_text(text)
-        
-        if level == "aggregate": #aggregate estimates
-            parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
-            p_scores = self._polarization(parties_a, speakers_a, text_vectorized_a, low_memory = False, **kwargs)
-            #store results
-            res = dict()
-        
-            #get sample sizes for both parties
-            res["n"] = {self.party[0]: np.sum(parties_a == self.party[0]), 
-                    self.party[1]: np.sum(parties_a == self.party[1])}
 
-
-            #get point estimate of polarization
-            gov = 0.5*(1/res["n"][self.party[0]]) * np.sum(p_scores[parties_a == self.party[0]])
-            opp = 0.5*(1/res["n"][self.party[1]]) * np.sum(p_scores[parties_a == self.party[1]])
-            res["point"] = gov + opp
-            
-            if conf_int:
-                assert(sample_size is not None) 
-                samples = []
-                
-                for i in range(conf_int):
-                    samp_inds = self._sample(parties, sample_size = 0.1, stratified = True) #get sample of ids
-                    speakers_s = speakers[samp_inds]
-                    parties_s = parties[samp_inds]
-                    text_s = text[samp_inds]
-                    #apply recursively:
-                    samples.append(self.estimate(parties_s, speakers_s, text_s, 
-                                                 conf_int = None, level = "aggregate")) 
-                res = self._confidence_intervals(samples, res) #compute confidence intervals
-                return res
-            
-            return res
-                    
-        elif level == "speaker": #polarization for each individual user
-            parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
-            p_scores = self._polarization(parties_a, speakers_a, text_vectorized_a, low_memory = True, **kwargs)
-            
-            return p_scores, speakers_a
-            
-            
-        elif level == "speech" and text_id is not None: #polarization for each individual speech
-            text_id = np.array(text_id)
-            p_scores = self._polarization(parties, speakers, text_vectorized,
-                                          normalize = True, low_memory = True, **kwargs)
-            return p_scores, text_id
-
-            
         
 #test 
 if __name__ == "__main__":
