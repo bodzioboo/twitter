@@ -55,7 +55,7 @@ def plot_aggregated_bytopic(bytopic:list, figsize:tuple=(10, 10), tick_freq:int 
             ax[i].xaxis.set_ticks(np.arange(len(aggregated['day']), step = tick_freq))
             ax[i].plot(aggregated['day'], aggregated["true_estimate"], lw = 3, label='Leave out estimator', color='blue')
             if topic_dict is not None:
-                ax[i].set_title(f'Topic: {topic_dict[str(i + 1)]}')
+                ax[i].set_title(f'Topic {i+1}: {topic_dict[str(i + 1)]}')
             else:
                 ax[i].set_title(f'Topic number {i + 1}')
             ax[i].grid()

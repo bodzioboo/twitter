@@ -132,7 +132,7 @@ def plot_dists(data:pd.DataFrame, topic_subset:list = None,
         data = data.loc[data.cluster.isin(topic_subset)]
         
     if topic_dict is not None:
-        data['cluster'] = data['cluster'].map(topic_dict)
+        data['cluster'] = data['cluster'].astype(str) + " : " + data['cluster'].map(topic_dict)
         
     
     
