@@ -20,6 +20,10 @@ import logging
 from tqdm import tqdm
 import pdb
 import numpy as np
+from itertools import islice, repeat
+from itertools import chain
+import gc
+from operator import itemgetter
 
 #use logger of whatever file it's executed from
 logger = logging.getLogger(__name__)
@@ -414,7 +418,8 @@ def read_dask(files:list, regex:str, filter_fun = None, **kwargs):
         ddf = filter_fun(ddf)
     return ddf
 
-def read_pandas(files:list, regex:str, filter_fun = None, 
+def read_pandas(files:list, regex:str, 
+                filter_fun = None, 
                 batch_size:int = 1, **kwargs):
     """
     Returns pandas iterator given a list of file.
@@ -593,55 +598,164 @@ class VectorDict:
     def __init__(self):
         self.matrix = None
         self.keys = None
-    def read(self, path, dim, vocab = None):
+        
+        
+    def _load(self, file, dim:int, vocab:dict = None, dtype = np.float32):
+        """
+        Load vectors to class
+        """
+        mapping = dict()
+        for line in file:
+            vec = line.split()
+            if len(vec) == dim + 1:
+                mapping[vec[0]] = [float(elem) for elem in vec[1:]]
+        self.matrix = np.vstack(list(mapping.values()))
+        self.keys = np.array(list(mapping.keys()))
+        del mapping
+        gc.collect()
+        return self
+            
+    def read_file(self, path:str, dim:int, **kwargs):
         """
         Read vectors from text file.
         path: str
             path to vec file
         dim: int
             Dimensionality of the word vector
-        vocab: list
-            Vocabulary to use
+        **kwargs: arguments for _load
         
         """
         with open(path, 'r') as f:
-            vecs = [] #store vectors
-            keys = [] #store keys
-            for line in tqdm(f):
-                vec = line.split()
-                if len(vec) == dim + 1 and (vocab is None or vec[0] in vocab):
-                    keys.append(vec[0])
-                    vecs.append(np.array(vec[1:], dtype = np.float32))
-            self.matrix = np.array(vecs)
-            self.keys = np.array(keys)
-        return self
+            return self._load(f, dim, **kwargs)
             
-    def __getitem__(self, key):
+    def __getitem__(self, key:str):
         if key not in self.keys:
             raise(KeyError('Not a valid key'))
         ind = np.where(self.keys == key)[0]
-        return self.matrix[ind]
+        return self.matrix[ind].flatten()
     
     def _cosine_sim(self, vec1:np.array, vec2:np.array):
         dots = vec1 @ vec2.T
         norms = np.outer(np.linalg.norm(vec1, axis = 1), np.linalg.norm(vec2, axis = 1))
         return dots/norms      
     
-    def most_similar_by_vector(self, vector:np.array, n:int = 1):
-        comp = self._cosine_sim(self.matrix, vector)
-        indices = (-comp).argsort(axis = 0)[:n]
-        result = self.keys[indices]
+    def most_similar_by_vectors(self, vector:np.array, n:int = 1):
+        comp = self._cosine_sim(self.matrix, vector) #get pairwise cosine similarity
+        indices = (-comp).argsort(axis = 0)[:n] #get indices of top n for each of the vectors
+        result = [list(zip(self.keys[ind].tolist(), comp[ind,i].tolist())) for i, ind in enumerate(indices.T)]
         return result
     
-    def most_similar_by_word(self, word, n:int = 1):
-        vec = self.matrix[self.keys == word]
-        result = self.most_similar_by_vector(vec, n = n)
-        return result                
+    def most_similar_by_words(self, words:list, n:int = 1):
+        vec = np.array(itemgetter(*words)(self))
+        if len(vec.shape) != 2:
+            vec = vec[np.newaxis]
+        result = self.most_similar_by_vectors(vec, n = n)
+        return result  
+
+
+class VectorDictLowMemory(VectorDict):
+    def __init__(self, path, dim, chunk_size:int = 100000):
+        self.path = path
+        self.chunk_size = chunk_size
+        self.dim = dim
+        
+        
+    def read_in_chunks(self, connection, chunk_size:int):
+        for _ in tqdm(repeat(0)):
+            data = list(islice(connection, chunk_size))
+            if not data:
+                break
+            yield data
+        
+        
+    def apply_in_chunks(self, func, **kwargs):
+        """Lazy function (generator) to read a file piece by piece."""
+        result = []
+        for data in self.read_in_chunks(connection = open(self.path, 'r'), chunk_size = self.chunk_size):
+            super()._load(data, dim = self.dim)
+            res = func(**kwargs)
+            result.append(res)
+        return result
+    
+
+    
+    def getter(self, keys:list):
+        """
+        Get word vectors given a string.
+
+        Parameters
+        ----------
+        key : list
+            words.
+
+        Returns
+        -------
+        np.array
+            word vector
+
+        """
+        vectors = []
+        for data in self.read_in_chunks(open(self.path, 'r'), self.chunk_size):
+            super()._load(data, dim = self.dim)
+            for key in keys:
+                if key in self.keys:
+                    vectors.append(self[key])
+                else:
+                    continue
+            if len(vectors) == len(keys):
+                return np.array(vectors)
+        raise KeyError('one of the keys not found')
+                
+        
+        
+    def most_similar_by_vectors(self, vector:np.array, n:int = 1):
+        """
+        Given a vector or array of vector  returns n most similar vectors for each.
+        ----------
+        vector : np.array
+            (N x dim) where dim is the dimensionality of the embeddings
+        n : int, optional
+            number of words to get.. The default is 1.
+
+        Returns
+        -------
+        results : list of lists of (word, similarity_score) tuples.
+
+        """
+        results = self.apply_in_chunks(super().most_similar_by_vectors, vector = vector, n = n)
+        results = np.array(results).T.tolist() #transpose
+        results = [chain.from_iterable(res) for res in results] #join all lists
+        results = [sorted(res, key = lambda x: x[1], reverse = True)[:n] for res in results] #get top n
+        return results
+    
+    def most_similar_by_words(self, word:list, n:int = 1):
+        """
+        Given a list of words, return n most similar words for each.
+
+        Parameters
+        ----------
+        word : list
+            list of strings.
+        n : int, optional
+            number of words to get. The default is 1.
+
+        Returns
+        -------
+        results : TYPE
+            DESCRIPTION.
+
+        """
+        vectors = self.getter(word)
+        results = self.most_similar_by_vectors(vectors, n)
+        return results         
+            
+    
+    
+    
+
                 
 if __name__ == "__main__":
-    path_gov = '/media/piotr/SAMSUNG/data/gov/gov_tweets.csv'
-    tweets_datesplit(path_gov, chunksize = 100000)
-    
+    pass
         
 
     

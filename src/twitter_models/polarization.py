@@ -21,10 +21,11 @@ warnings.filterwarnings('ignore')
 from collections import defaultdict
 from scipy.sparse import csr_matrix
 import pdb
+import logging
 
 
 class ModelPolarization:
-    def __init__(self, parties, limit = 10, ngram_range = (2,2), method = "count"):
+    def __init__(self, parties, limit = 10, ngram_range = (2,2), method = "count", log = logging.DEBUG):
         """
         Initialize the model
 
@@ -49,11 +50,21 @@ class ModelPolarization:
             self.vectorizer = CountVectorizer(ngram_range = ngram_range, min_df = limit)
         elif method == "tfidf":
             self.vectorizer = TfidfVectorizer(ngram_range = ngram_range, min_df = limit)
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(log)
+
+        self.logger.debug('Initialized')
             
             
-    def estimate(self, parties, speakers, text, text_id = None,
-                 level = "aggregate", conf_int = None, 
-                 sample_size = 0.1, **kwargs):
+    def estimate(self, 
+                 parties:list, 
+                 speakers:list, 
+                 text:list, 
+                 text_vectorized = None, 
+                 text_id:list = None,
+                 level:str = "aggregate", 
+                 conf_int:int = None, 
+                 sample_size:float = 0.1, **kwargs):
         """
         Main function. Estimate partisanship according to Gentzkow's model.
 
@@ -90,7 +101,8 @@ class ModelPolarization:
         text = np.array(text, dtype = str)
         #vectorize text:
         #first run - fit; next runs (CI) - just transform
-        text_vectorized = self._vectorize_text(text)
+        if text_vectorized is None:
+            text_vectorized = self._vectorize_text(text)
         
         if level == "aggregate": #aggregate estimates
             parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
@@ -117,8 +129,10 @@ class ModelPolarization:
                     speakers_s = speakers[samp_inds]
                     parties_s = parties[samp_inds]
                     text_s = text[samp_inds]
+                    text_vectorized_s = text_vectorized[samp_inds]
                     #apply recursively:
                     samples.append(self.estimate(parties_s, speakers_s, text_s, 
+                                                 text_vectorized = text_vectorized_s,
                                                  conf_int = None, level = "aggregate")) 
                 res = self._confidence_intervals(samples, res) #compute confidence intervals
                 return res
@@ -137,6 +151,7 @@ class ModelPolarization:
             p_scores = self._polarization(parties, speakers, text_vectorized,
                                           normalize = True, low_memory = True, **kwargs)
             return p_scores, text_id
+        
             
             
     def get_posteriors(self, parties, speakers, text):
@@ -144,6 +159,7 @@ class ModelPolarization:
         Get posterior distribution of each word to evaluate word-wise partisanship.
 
         """
+        self.logging.debug('Computing posteriors')
         parties = np.array(parties, dtype = str)
         speakers = np.array(speakers, dtype = str)
         text = np.array(text, dtype = str)
@@ -152,6 +168,7 @@ class ModelPolarization:
         posterior = self._posterior(parties_a, speakers_a, text_vectorized_a, low_memory = False)
         posterior = np.mean(posterior, axis = 0)
         posterior = dict(zip(self.vectorizer.get_feature_names(), posterior))
+        self.logging.debug('Posteriors computed')
         
         return posterior
             
@@ -174,11 +191,12 @@ class ModelPolarization:
         text_vectorized: sparse matrix
 
         """
+        self.logger.debug('Vectorizing text')
         if hasattr(self.vectorizer, 'vocabulary_'):
             text_vectorized = self.vectorizer.transform(text)
         else:
             text_vectorized = self.vectorizer.fit_transform(text)
-        
+        self.logger.debug('Done vectorizing text')
         return text_vectorized
         
     
@@ -276,6 +294,7 @@ class ModelPolarization:
             else:
                 
                 #this method is vectorized, but takes up more memory
+                self.logger.debug('Computing posteriors')
                 text_vectorized = text_vectorized.toarray() #convert sparse to normal
                 denominators = text_vectorized.sum(axis = 0) - text_vectorized #sum of all phrases for each excluding each
                 p0 = text_vectorized.copy()
@@ -283,6 +302,7 @@ class ModelPolarization:
                 numerators = text_vectorized[parties == self.party[0]].sum(axis = 0) - p0
                 posteriors = numerators/denominators
                 posteriors = np.nan_to_num(posteriors, nan = 0.5, copy = False)
+                self.logger.debug('Done computing posteriors')
                 #return an array
                 
         else:

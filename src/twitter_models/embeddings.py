@@ -15,7 +15,6 @@ import itertools
 from sklearn.metrics import silhouette_score
 import logging
 from collections import defaultdict
-import pdb
 from nltk.cluster import KMeansClusterer
 from nltk.cluster.util import cosine_distance
 import gc
@@ -313,8 +312,7 @@ class KTopicModel(SentenceEmbeddings):
         lbl = self.predict(text, refit = refit, return_closest = True)
         sent_embed = super().transform(text)
         score = silhouette_score(sent_embed, lbl, 
-                                 sample_size = sample_size, 
-                                 random_state = 1234, **kwargs)
+                                 sample_size = sample_size, **kwargs)
         return score
     
     
@@ -367,8 +365,7 @@ class KTopicModelCosine(SentenceEmbeddings):
         weights = self._get_weights(text, refit = refit)
         sent_embed = self._get_embeddings_sent(text, self.word_embed, weights)
         score = silhouette_score(sent_embed, lbl, 
-                                 sample_size = sample_size, 
-                                 random_state = 1234, **kwargs)
+                                 sample_size = sample_size, **kwargs)
         return score
         
     

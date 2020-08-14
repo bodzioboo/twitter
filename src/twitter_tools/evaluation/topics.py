@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from itertools import chain
+from operator import itemgetter
 from nltk import FreqDist
 from twitter_tools.utils import batch
 from bokeh.plotting import output_file, show
@@ -20,6 +21,8 @@ from bokeh.models import ColumnDataSource, Text, Circle, Plot, HoverTool, Linear
 import umap
 from twitter_models.embeddings import KTopicModel
 from gensim.models import KeyedVectors
+
+
 
 
 def plot_n_closest(ktp:KTopicModel, gensim_model:KeyedVectors, topn = 20):
@@ -159,7 +162,7 @@ def plot_dists(data:pd.DataFrame, topic_subset:list = None,
     
     
     #TEMPORAL DISTRIBUTION
-    pd.crosstab(data.day, data.cluster, normalize = "index").plot(rot = 45, ax = ax[2])
+    pd.crosstab(data.day, data.cluster, normalize = "index").plot.bar(rot = 45, ax = ax[2])
     ticks = np.arange(0, len(data.day.unique()), 4) #every fourth tick
     ax[2].set_xticks(ticks)
     ax[2].set_xticklabels(np.array(sorted(data.day.unique()))[ticks])
@@ -174,20 +177,30 @@ def plot_dists(data:pd.DataFrame, topic_subset:list = None,
     
 
 
-def plot_kmeans_centroids(ktp:KTopicModel, text:list, gensim_model:KeyedVectors,
-                          output:str, model = umap.UMAP, **kwargs):
-    embeddings = ktp.transform(text)
-    reducer = umap.UMAP(random_state = 1234)
-    reducer.fit(embeddings)
-    centroids = reducer.transform(ktp.cluster.cluster_centers_)
+def plot_kmeans_centroids(ktp:KTopicModel, texts:list, centroid_tokens:dict,
+                          output:str = None, model = umap.UMAP, random_state = 1234, **kwargs):
+    """
+    np.random.seed(random_state)
+    sample = np.random.choice(texts, size = int(sample_size*len(texts))) #get sample for fitting
+    print(f'Sample size {len(sample)}')
+    embeddings = ktp.transform(sample) #compute embeddings
+    print(f'Embeddings shape {embeddings.shape}')
+    """
+    reducer = model(random_state = random_state) #get UMAP representation
+    centroids = reducer.fit_transform(ktp.cluster.cluster_centers_) 
     
-    labels  = ktp.predict(text, return_closest = True)
+    labels  = ktp.predict(texts, return_closest = True)
     cluster_sizes = pd.value_counts(labels).sort_index().tolist()
     cluster_numbers = list(range(len(centroids)))
     
-    res = []
-    for k, center in enumerate(ktp.cluster.cluster_centers_):
-        res.append([r[0] for r in gensim_model.similar_by_vector(center, **kwargs)])
+    centroid_tokens = list(centroid_tokens.values())
+    common_tokens = []
+    for label in sorted(np.unique(labels)):
+        texts_topic = itemgetter(*np.where(labels == label))(texts)
+        topic_dist = FreqDist(chain.from_iterable(texts_topic))
+        common_tokens.append(topic_dist.most_common(len(centroid_tokens[label])))
+    
+    
     
     #create a source
     source = ColumnDataSource(dict(x = centroids[:,0], 
@@ -195,13 +208,13 @@ def plot_kmeans_centroids(ktp:KTopicModel, text:list, gensim_model:KeyedVectors,
                                    text = cluster_numbers, 
                                    size = np.array(cluster_sizes)/np.sum(cluster_sizes), 
                                    log_size = 10 * np.log(cluster_sizes), 
-                                   pivot_words = res))
+                                   centroid_tokens = centroid_tokens, 
+                                   common_tokens = common_tokens))
     
     
     #create a model
-    plot = Plot(
-        title=None, plot_width=800, plot_height=800,
-        min_border=0, toolbar_location=None)
+    plot = Plot(plot_width=800, plot_height=800,
+        min_border=0, toolbar_location=None, **kwargs)
 
     #centroids:
     glyph = Circle(x="x", y="y", size="log_size", fill_alpha=0.5)
@@ -227,15 +240,16 @@ def plot_kmeans_centroids(ktp:KTopicModel, text:list, gensim_model:KeyedVectors,
     tooltips = [
             ('Size', '@size'),
             ('Cluster number', '@text'),
-            ('Closest words', '@pivot_words')
+            ('Closest words to centroids', '@centroid_tokens'), 
+            ('Most common words in centroids', '@common_tokens')
            ]
     
     plot.add_tools(HoverTool(tooltips=tooltips))
     
     
     #plot:
-    output_file(output)
-    show(plot)
+    if output is not None:
+        output_file(output) 
     
     return plot
     
