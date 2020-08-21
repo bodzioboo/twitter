@@ -22,7 +22,30 @@ import gc
 class SentenceEmbeddings:
     
     
-    def __init__(self, path_embeddings, a = 10e-3, ncomp = 1, num_workers = 4, dask_split = 10):
+    def __init__(self, path_embeddings:str, a:float = 10e-3, ncomp:int = 1, 
+                 num_workers:int = 4, dask_split:int = 10):
+        """
+        Initialize the Sentence Embeddings model
+
+        Parameters
+        ----------
+        path_embeddings : str
+            Path to the word vectors.
+        a : float, optional
+            Inverse frequency weighting parameter. If None, no weighting is applied.
+            The default is 10e-3.
+        ncomp : int, optional
+            Number of principal components to be removed. The default is 1.
+        num_workers : int, optional
+            Number of workers for dask array computations. The default is 4.
+        dask_split : int, optional
+            Number of partitions for dask array. The default is 10.
+
+        Returns
+        -------
+        SentenceEmbeddings()
+
+        """
         self.path_embeddings = path_embeddings #path to txt file with the embeddings
         self.a = a  #normalizing constant for weighting 
         self.num_workers = num_workers #number of workers for dask operations
@@ -34,6 +57,8 @@ class SentenceEmbeddings:
         self.u = None #left singular vector of the sentence embedding matrix
         self.vocab = None #freq dist of the text
         self.ncomp = ncomp #number of components to remove in SVD
+        
+        return self
         
     def fit(self, text:list):
         """
@@ -188,9 +213,13 @@ class SentenceEmbeddings:
         
         #return normalized
         count = sum(list(self.vocab.values()))
-        weights = {k:self.a/(self.a + (v/count)) for k, v in self.vocab.items()}
-        median_prob = np.median(list(self.vocab.values()))
-        weights = defaultdict(lambda: median_prob, weights)
+        if self.a is not None:
+            weights = {k:self.a/(self.a + (v/count)) for k, v in self.vocab.items()}
+            median_prob = np.median(list(self.vocab.values()))
+            weights = defaultdict(lambda: median_prob, weights)
+        else:
+            weights = defaultdict(lambda: 1)
+
         return weights
         
     def _get_embeddings_words(self, vocab):
@@ -231,11 +260,12 @@ class OutlierDetector(SentenceEmbeddings):
     
 class KTopicModel(SentenceEmbeddings):
     
-    def __init__(self, k, path_embeddings, batch_size = 100, **kwargs):
+    def __init__(self, k, path_embeddings, batch_size = 100, random_state = None, **kwargs):
         super().__init__(path_embeddings, **kwargs)
         self.k = k
         self.batch_size = batch_size
-        self.cluster = MiniBatchKMeans(n_clusters = self.k, batch_size = self.batch_size) #init clusterer
+        self.cluster = MiniBatchKMeans(n_clusters = self.k, batch_size = self.batch_size, 
+                                       random_state = random_state) #init clusterer
 
     def __repr__(self):
         return f'KTopicEmbeddingModel (k = {self.k}, a = {self.a})'

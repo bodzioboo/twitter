@@ -46,7 +46,7 @@ def plot_n_closest(ktp:KTopicModel, gensim_model:KeyedVectors, topn = 20):
 
 def lda_predict(model, texts: list):
     topics = [model.get_document_topics(w) for w in texts]
-    topics = [sorted(topic, key = lambda x: x[1], reverse = True)[0][0] for topic in topics]
+    topics = [sorted(topic, key = lambda x: x[1], reverse = True)[0][0]+1 for topic in topics]
     return topics
 
 

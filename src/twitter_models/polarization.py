@@ -22,10 +22,13 @@ from collections import defaultdict
 from scipy.sparse import csr_matrix
 import pdb
 import logging
+import pandas as pd
 
 
 class ModelPolarization:
-    def __init__(self, parties, limit = 10, ngram_range = (2,2), method = "count", log = logging.DEBUG):
+    def __init__(self, parties, limit = 10, ngram_range = (2,2), 
+                 method = "count", log = logging.INFO, 
+                 **kwargs):
         """
         Initialize the model
 
@@ -47,9 +50,9 @@ class ModelPolarization:
         """
         self.party = np.unique(parties) #store party names
         if method == "count":
-            self.vectorizer = CountVectorizer(ngram_range = ngram_range, min_df = limit)
+            self.vectorizer = CountVectorizer(ngram_range = ngram_range, min_df = limit, **kwargs)
         elif method == "tfidf":
-            self.vectorizer = TfidfVectorizer(ngram_range = ngram_range, min_df = limit)
+            self.vectorizer = TfidfVectorizer(ngram_range = ngram_range, min_df = limit, **kwargs)
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(log)
 
@@ -148,9 +151,8 @@ class ModelPolarization:
             
         elif level == "speech" and text_id is not None: #polarization for each individual speech
             text_id = np.array(text_id)
-            p_scores = self._polarization(parties, speakers, text_vectorized,
-                                          normalize = True, low_memory = True, **kwargs)
-            return p_scores, text_id
+            p_scores = self._polarization(parties, speakers, text_vectorized, low_memory = True, **kwargs)
+            return dict(zip(text_id, p_scores))
         
             
             
@@ -159,7 +161,6 @@ class ModelPolarization:
         Get posterior distribution of each word to evaluate word-wise partisanship.
 
         """
-        self.logging.debug('Computing posteriors')
         parties = np.array(parties, dtype = str)
         speakers = np.array(speakers, dtype = str)
         text = np.array(text, dtype = str)
@@ -168,7 +169,6 @@ class ModelPolarization:
         posterior = self._posterior(parties_a, speakers_a, text_vectorized_a, low_memory = False)
         posterior = np.mean(posterior, axis = 0)
         posterior = dict(zip(self.vectorizer.get_feature_names(), posterior))
-        self.logging.debug('Posteriors computed')
         
         return posterior
             
@@ -322,7 +322,7 @@ class ModelPolarization:
     
     
     
-    def _polarization(self, parties, speakers, text_vectorized, normalize = False, 
+    def _polarization(self, parties, speakers, text_vectorized, 
                       low_memory = True, **kwargs):
         """
         
@@ -335,8 +335,6 @@ class ModelPolarization:
             vector of speaker ids.
         text_vectorized : np.array
             vectorized text.
-        normalize : bool, optional
-            DESCRIPTION. The default is False.
         low_memory: bool, optional
             control whether the computation is memory-efficient (through a for loop on a dictionary, 
             or processing-time efficient (using vectorization).
@@ -357,7 +355,7 @@ class ModelPolarization:
             #memory-efficient version - requires id:count dictionary as input, return by the _posterior method
             #if low_memory set to True
             c_mat = c_mat.tocsr() #convert to csr
-            posterior = self._posterior(parties, speakers, text_vectorized, low_memory = low_memory) #get posterior
+            posterior = self._posterior(parties, speakers, text_vectorized, low_memory = low_memory, **kwargs) #get posterior
             p_scores = np.zeros(c_mat.shape[0]) #store polarization scores
             
             for speaker in np.unique(speakers):
@@ -372,7 +370,7 @@ class ModelPolarization:
             #vectorized version - requires array as input:
             #depending on the party, posterior is either posterior or 1 -posterior
             c_mat = c_mat.toarray() #convert to csr
-            posterior = self._posterior(parties, speakers, text_vectorized, low_memory = low_memory) #get posterior
+            posterior = self._posterior(parties, speakers, text_vectorized, low_memory = low_memory, **kwargs) #get posterior
             p_scores = np.zeros(c_mat.shape[0]) #store polarization scores
             posterior[parties != self.party[0]] = 1 - posterior[parties != self.party[0]] #SUBTRACTION OF ONE!
             p_scores = np.sum(c_mat * posterior, axis = 1) #rowwise dot product
@@ -432,6 +430,20 @@ class ModelPolarization:
         stats['estimate'] = estimate
         
         return stats
+    
+    
+    def estimate_topics(self, source:list, topics:list):
+        dat = pd.DataFrame(dict(source = source, topic = topics))
+        dat = pd.DataFrame(dat.groupby(['source', 'topic']).size()).reset_index().pivot(index = 'topic', columns = 'source')
+        dat.columns = dat.columns.droplevel(0)
+        dat['n'] = dat['gov'] + dat['opp'] #get number of tweets in topic on this day
+        dat['prob_gov'] = dat['gov']/(dat['n']) #get probability of topic in gov
+        dat['prob_opp'] = 1 - dat['prob_gov'] #get probability of topic in opp
+        #get posterior probability of assigning to correct party for each topic
+        dat['pola'] = dat['prob_gov']*dat['gov']/dat['n'] + dat['prob_opp']*dat['opp']/dat['n'] 
+        #get weigthed average
+        pola = (dat['pola']*dat['n']/dat['n'].sum()).sum()
+        return pola
     
     
     

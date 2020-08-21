@@ -505,8 +505,9 @@ def read_files(path:str, day_from:str, day_to:str, dtype:str = None,
     if not files:
         raise ValueError("Empty path")
 
-        
-    files = sorted([f for f in files if "csv" in f])
+
+    pattern = r'[a-z]{3}_tweets_\d{4}\_\d{2}\_\d{2}\.csv'  
+    files = sorted([f for f in files if re.fullmatch(pattern, f)])
     files = [os.path.join(path, f) for f in files if filter_date(f, start = day_from, end = day_to)]
     
         

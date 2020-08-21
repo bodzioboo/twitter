@@ -8,7 +8,6 @@ Created on Tue Aug 11 11:08:15 2020
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 from numpy.polynomial.polynomial import polyfit
 
 
@@ -41,10 +40,11 @@ def plot_aggregated(date:list,
 
     
 
+
 def plot_aggregated_bytopic(date:list, true_estimate:list, topics:list,
                             figsize:tuple=(10, 10), tick_freq:int = 20, 
                             trend_line:bool = False,
-                            topic_subset:list = None, topic_dict:dict = None):
+                            topic_subset:list = None):
     unique_topics = sorted(np.unique(topics))
     date = np.unique(date)
     dim = int(np.ceil(np.sqrt(len(unique_topics))))
@@ -56,18 +56,15 @@ def plot_aggregated_bytopic(date:list, true_estimate:list, topics:list,
         if i in range(0, dim**2, dim):
             ax[i].set_ylabel('Polarization')
         ax[i].xaxis.set_tick_params(rotation=45)
-        ax[i].xaxis.set_tick_params(rotation=45)
-        if i+1 in unique_topics:
+        if i < len(unique_topics):
             ax[i].xaxis.set_ticks(np.arange(len(date), step = tick_freq))
-            ax[i].plot(date, true_estimate[topics == i+1], lw = 3, label='Leave out estimator', color='blue')
+            ax[i].plot(date, true_estimate[topics == unique_topics[i]], lw = 3, 
+                       label='Leave out estimator', color='blue')
             if trend_line:
                 date_num = np.arange(len(date))
-                b, m = polyfit(date_num, true_estimate[topics == i+1].to_numpy(), 1)
+                b, m = polyfit(date_num, true_estimate[topics == unique_topics[i]].to_numpy(), 1)
                 ax[i].plot(date_num, b + m * date_num, '-', color = 'red')
-            if topic_dict is not None:
-                ax[i].set_title(f'Topic {i+1}: {topic_dict[str(i + 1)]}')
-            else:
-                ax[i].set_title(f'Topic number {i + 1}')
+            ax[i].set_title(f'Topic {unique_topics[i]}')
             ax[i].grid()
     plt.tight_layout()
     plt.show()
