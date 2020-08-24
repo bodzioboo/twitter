@@ -44,16 +44,20 @@ def plot_aggregated(date:list,
 def plot_aggregated_bytopic(date:list, true_estimate:list, topics:list,
                             figsize:tuple=(10, 10), tick_freq:int = 20, 
                             trend_line:bool = False,
-                            topic_subset:list = None):
+                            topic_subset:list = None, 
+                            dims:tuple = None):
     unique_topics = sorted(np.unique(topics))
     date = np.unique(date)
-    dim = int(np.ceil(np.sqrt(len(unique_topics))))
-    fig, ax = plt.subplots(dim, dim, figsize = figsize, sharey = True, sharex = True)
+    if dims is None:
+        dim1 = dim2 = int(np.ceil(np.sqrt(len(unique_topics))))
+    else:
+        dim1, dim2 = dims
+    fig, ax = plt.subplots(dim1, dim2, figsize = figsize, sharey = True, sharex = True)
     ax = ax.ravel()
-    for i in range(dim**2):
-        if i >= dim**2 - dim:
+    for i in range(dim1*dim2):
+        if i >= dim1**dim2  - dim2:
             ax[i].set_xlabel('Date')
-        if i in range(0, dim**2, dim):
+        if i in range(0, dim1*dim2, dim1):
             ax[i].set_ylabel('Polarization')
         ax[i].xaxis.set_tick_params(rotation=45)
         if i < len(unique_topics):
