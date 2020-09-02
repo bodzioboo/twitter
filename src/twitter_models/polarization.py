@@ -16,19 +16,17 @@ Created on Thu Apr 30 19:57:21 2020
 
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 import numpy as np
-import warnings
 from collections import defaultdict
 from scipy.sparse import csr_matrix
-import pdb
+from operator import itemgetter
+from joblib import Parallel, delayed
 import logging
 import pandas as pd
-
-warnings.filterwarnings('ignore')
 
 
 class ModelPolarization:
     def __init__(self, parties, limit=10, ngram_range=(2, 2),
-                 method="count", log=logging.INFO,
+                 method="count", log=logging.INFO, n_jobs=4,
                  **kwargs):
         """
         Initialize the model
@@ -47,6 +45,7 @@ class ModelPolarization:
         Returns
         -------
         None.
+        :param num_workers:
 
         """
         self.party = np.unique(parties)  # store party names
@@ -54,9 +53,9 @@ class ModelPolarization:
             self.vectorizer = CountVectorizer(ngram_range=ngram_range, min_df=limit, **kwargs)
         elif method == "tfidf":
             self.vectorizer = TfidfVectorizer(ngram_range=ngram_range, min_df=limit, **kwargs)
+        self.n_jobs = n_jobs
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(log)
-
         self.logger.debug('Initialized')
 
     def estimate(self,
@@ -124,18 +123,11 @@ class ModelPolarization:
 
             if conf_int:
                 assert (sample_size is not None)
-                samples = []
-
-                for i in range(conf_int):
-                    samp_inds = self._sample(parties, sample_size=0.1, stratified=True)  # get sample of ids
-                    speakers_s = speakers[samp_inds]
-                    parties_s = parties[samp_inds]
-                    text_s = text[samp_inds]
-                    text_vectorized_s = text_vectorized[samp_inds]
-                    # apply recursively:
-                    samples.append(self.estimate(parties_s, speakers_s, text_s,
-                                                 text_vectorized=text_vectorized_s,
-                                                 conf_int=None, level="aggregate"))
+                samples = Parallel(n_jobs=self.n_jobs)(delayed(self._bootstrap)(speakers, parties,
+                                                                                text, text_vectorized,
+                                                                                sample_size=sample_size,
+                                                                                stratified=True) for _ in
+                                                       range(conf_int))
                 res = self._confidence_intervals(samples, res)  # compute confidence intervals
                 return res
 
@@ -222,7 +214,7 @@ class ModelPolarization:
 
         # get unique speakers and corresponding parties:
         parties_u, speakers_u = zip(*np.unique(np.c_[parties, speakers], axis=0))
-        parties_u = np.array(parties_u);
+        parties_u = np.array(parties_u)
         speakers_u = np.array(speakers_u)
         agg = []
         # aggregate by speaker
@@ -278,7 +270,8 @@ class ModelPolarization:
                     denominator = text_vectorized[ind].sum(axis=0)  # phrase counts for all speakers but the current one
                     numerator = text_vectorized[(parties == self.party[0]) & ind].sum(
                         axis=0)  # same as above but only party 0
-                    posteriors[speaker] = numerator / denominator  # calculate posterior
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        posteriors[speaker] = numerator / denominator  # calculate posterior
                     posteriors[speaker] = np.nan_to_num(posteriors[speaker], nan=0.5, copy=False)
                 # return a dict
             else:
@@ -291,7 +284,10 @@ class ModelPolarization:
                 p0 = text_vectorized.copy()
                 p0[parties == self.party[1]] = 0  # subtract individual counts only when party is p0
                 numerators = text_vectorized[parties == self.party[0]].sum(axis=0) - p0
-                posteriors = numerators / denominators
+                # in the leave out method, if a phrase was used only by particular speaker, the denominator is 0
+                # in those cases, the produced nans should be replaced with 0.5, the neutral prior
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    posteriors = numerators / denominators
                 posteriors = np.nan_to_num(posteriors, nan=0.5, copy=False)
                 self.logger.debug('Done computing posteriors')
                 # return an array
@@ -302,6 +298,7 @@ class ModelPolarization:
             denominator = text_vectorized.sum(axis=0)  # phrase counts for all speakers
             numerator = text_vectorized[parties == self.party[0]].sum(axis=0)  # phrase counts for party 0
             posteriors = defaultdict(lambda: numerator / denominator)  # calculate posterior
+            # return a dict
 
         return posteriors
 
@@ -330,8 +327,9 @@ class ModelPolarization:
             DESCRIPTION.
 
         """
-        c_mat = text_vectorized.multiply(
-            1 / text_vectorized.sum(axis=1))  # normalize counts into individual probabilities
+        with np.errstate(divide='ignore', invalid='ignore'):
+            c_mat = text_vectorized.multiply(
+                1 / text_vectorized.sum(axis=1))  # normalize counts into individual probabilities
         c_mat = np.nan_to_num(c_mat, copy=False, nan=0.5)  # convert missing to 0.5s
 
         if low_memory:
@@ -380,6 +378,28 @@ class ModelPolarization:
         # return the sample
         return sample_inds
 
+    def _bootstrap(self, speakers, parties, text, text_vectorized, sample_size=0.1, stratified=False):
+
+        if stratified:
+            prob_p0 = (np.sum(parties == self.party[0]) / parties.shape[0]) / np.sum(parties == self.party[0])
+            prob_p1 = (np.sum(parties == self.party[1]) / parties.shape[0]) / np.sum(parties == self.party[1])
+            p = np.where(parties == self.party[0], prob_p0, prob_p1)
+        else:
+            p = None
+
+        inds = np.arange(len(parties))
+        size = int(round(inds.shape[0] * sample_size, 0))  # get number
+        sample_inds = np.random.choice(inds, size=size, p=p, replace=False)
+
+        parties, speakers, text, text_vectorized = list(
+            map(itemgetter(sample_inds), [parties, speakers, text, text_vectorized]))
+
+        res = self.estimate(parties, speakers, text,
+                            text_vectorized=text_vectorized,
+                            conf_int=None, level="aggregate")
+
+        return res
+
     def _confidence_intervals(self, samples, res):
 
         # sample size and point estimate
@@ -423,40 +443,89 @@ class ModelPolarization:
 
 # test
 if __name__ == "__main__":
-    """
-    
-    import sys
-    sys.path.append("..")
-    from twitter_tools.utils import read_files
-    import json 
-    import os
-    import time
-    path = "/home/piotr/projects/twitter/data/clean"
-    nonpolish_ids = json.load(open(os.path.join(path, "non_polish_ids.json"), "r"))
+    from src.twitter_tools.utils import read_window
     from functools import partial
-    path_stopwords = "/home/piotr/nlp/polish.stopwords.txt"
+    import random
+    import pickle
+    import json
+    import os
+    from tqdm import tqdm
+
+    PATH_STOPWORDS = '/home/piotr/nlp/polish.stopwords.txt'
     stopwords = []
-    with open(path_stopwords, "r") as f:
-        for word in f:
-            if word != "nie":
-                stopwords.append(word.strip("\n"))
-    
-    
-    def data_filter(data, n):
-        data.loc[:,("lemmatized")] = data.loc[:,("lemmatized")].apply(lambda x: " ".join([word for word in x.split() if word not in stopwords]))
-        data[data["user-id_str"].apply(lambda x: x not in nonpolish_ids)] #exclude non-polish users
-        #data = data.loc[data.polish.astype(float) >= 0.5] #more than 50% polish words
-        data = data[data.lemmatized.apply(lambda x: len(x) >= n)] #longer than n
-        data = data[np.logical_not(data.retweet)]
-        return data
-    
-    for dat in tqdm(read_files(path, 2, dtype = {"user-id_str":str, "retweet": bool, 
-                                                 "polish": float, "lemmatized":str}, 
-                               filter_fun = partial(data_filter, n = 0))):
-        pass
-    mod = ModelPolarization(parties = ["gov","opp"], limit = 10)
-    start = time.time()
-    res = mod.estimate(dat["source"], dat["user-id_str"], dat["lemmatized"], level = "aggregate", leave_out = True, conf_int = 100)
-    print(f'Evaluation time{time.time() - start}')
-    print(res)
-    """
+    with open(PATH_STOPWORDS, 'r') as f:
+        for line in f:
+            word = line.strip('\n')
+            if word != 'nie':
+                stopwords.append(word)
+    stopwords.append('mieć')
+
+    PATH = "/home/piotr/projects/twitter/"
+    PATH_DATA = os.path.join(PATH, "data/clean")
+    PATH_DROP = os.path.join(PATH, 'results/cleaning/drop_tweets.json')
+    drop_tweets = json.load(open(PATH_DROP, 'r'))
+    PATH_DROP = os.path.join(PATH, 'results/cleaning/drop_users.json')
+    drop_users = json.load(open(PATH_DROP, 'r'))
+    dtypes = json.load(open(os.path.join(PATH, 'results/cleaning/dtypes.json'), 'r'))
+
+
+    # filter function:
+    def filter_fun(df: pd.DataFrame, drop_users: list, drop_tweets: list, drop_duplicates=True, keep_cols=None,
+                   **kwargs):
+        df = df[np.logical_not(df['user-id_str'].isin(drop_users))]  # drop IDs that are to be excluded
+        df = df[np.logical_not(df['id_str'].isin(drop_tweets))]
+        if drop_duplicates:
+            df.drop_duplicates(inplace=True, **kwargs)
+        if keep_cols is not None:
+            df = df[keep_cols]
+        return df
+
+
+    gov = pickle.load(open(os.path.join(PATH, 'data/sample/gov_sample.p'), "rb"))
+    opp = pickle.load(open(os.path.join(PATH, 'data/sample/opp_sample.p'), "rb"))
+    parties = {k: "gov" for k in gov}
+    parties.update({k: "opp" for k in opp})
+
+    # Get random assignment
+    random.seed(1234)
+    random_keys = list(parties.keys())
+    random.shuffle(random_keys)  # randomize keys
+    random_values = list(parties.values())
+    random.shuffle(random_values)  # randomize values
+    randomized = dict(zip(random_keys, random_values))  # zip into dict
+
+
+    ff = partial(filter_fun, drop_users=drop_users, drop_tweets=drop_tweets,
+                 subset=['lemmatized'], keep_cols=['day', 'lemmatized', 'id_str', 'user-id_str', 'source'])
+
+
+
+    START = '2020_02_23'
+    END = '2020_07_18'
+    results = dict()
+    for df in tqdm(read_window(PATH_DATA, n=7, batch_size=1,
+                               day_from=START, day_to=END, dtype=dtypes, filter_fun=ff)):
+        # fit vectorizer on all vocabulary:
+        model = ModelPolarization(parties=["gov", "opp"], limit=40, ngram_range=(1, 2),
+                                  log=20, n_jobs=4, stop_words=stopwords)
+        model.prefit(df["lemmatized"].astype(str).to_numpy())
+        date_range = sorted(pd.to_datetime(df.day.unique()))
+        mid_date = date_range[3].date().strftime('%Y-%m-%d')
+        df = df[df['day'] == mid_date]
+        results[(mid_date, 'true')] = model.estimate(df['source'],
+                                                     df['user-id_str'],
+                                                     df['lemmatized'],
+                                                     level='aggregate',
+                                                     conf_int=100,
+                                                     leave_out=True)
+        random_parties = df["user-id_str"].astype(str).apply(lambda x: randomized.get(x))
+        results[(mid_date, 'random')] = model.estimate(random_parties,
+                                                       df['user-id_str'],
+                                                       df['lemmatized'],
+                                                       level='aggregate',
+                                                       conf_int=100,
+                                                       leave_out=True)
+
+    results = pd.DataFrame.from_dict(results, orient='index')
+    results.index.names = ['date', 'type']
+    results.to_csv('tmp.csv')

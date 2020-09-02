@@ -46,7 +46,7 @@ def plot_aggregated(date: list,
 def plot_aggregated_bytopic(date: list, true_estimate: list, topics: list,
                             figsize: tuple = (10, 10), tick_freq: int = 20,
                             trend_line: bool = False, lowess: bool = True,
-                            dims: tuple = None):
+                            dims: tuple = None, error: list = None):
     unique_topics = sorted(np.unique(topics))
     date = np.unique(date)
     if dims is None:
@@ -74,6 +74,10 @@ def plot_aggregated_bytopic(date: list, true_estimate: list, topics: list,
                 date_num = np.arange(len(date))
                 preds = sm.nonparametric.lowess(true_estimate[topics == unique_topics[i]].to_numpy(), date_num)
                 ax[i].plot(preds[:, 0], preds[:, 1], '-', color='orange')
+                
+            if error is not None:
+                ax[i].errorbar(date, true_estimate[topics == unique_topics[i]], yerr=error[:, topics == unique_topics[i]])
+
             ax[i].set_title(f'Topic {unique_topics[i]}')
             ax[i].grid()
     plt.tight_layout()
