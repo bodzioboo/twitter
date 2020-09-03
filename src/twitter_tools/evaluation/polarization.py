@@ -16,8 +16,9 @@ def plot_aggregated(date: list,
                     true_estimate: list, random_estimate: list = None,
                     true_ci: tuple = None, random_ci: tuple = None,
                     trend_line: bool = False, lowess: bool = False,
-                    tick_freq: int = 10):
-    fig, ax = plt.subplots(1, figsize=(10, 10))
+                    tick_freq: int = 10, ax=None):
+    if ax is None:
+        plt.gca()
     ax.plot(date, true_estimate, lw=3, label='Leave out estimator', color='blue')
     if random_estimate is not None:
         ax.plot(date, random_estimate, lw=3, linestyle="--", label='Random assignment', color='red')
@@ -40,7 +41,7 @@ def plot_aggregated(date: list,
     ax.set_xlabel('Date')
     ax.set_ylabel('Polarization')
     ax.grid()
-    return fig, ax
+    return ax
 
 
 def plot_aggregated_bytopic(date: list, true_estimate: list, topics: list,
