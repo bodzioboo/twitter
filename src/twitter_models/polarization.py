@@ -22,6 +22,9 @@ from operator import itemgetter
 from joblib import Parallel, delayed
 import logging
 import pandas as pd
+from typing import List, Sequence, Iterable
+import dask.array as da
+from dask.diagnostics import ProgressBar
 
 
 class ModelPolarization:
@@ -59,42 +62,26 @@ class ModelPolarization:
         self.logger.debug('Initialized')
 
     def estimate(self,
-                 parties: list,
-                 speakers: list,
-                 text: list,
+                 parties: List[str],
+                 speakers: List[str],
+                 text: List[str],
                  text_vectorized=None,
                  text_id: list = None,
                  level: str = "aggregate",
                  conf_int: int = None,
                  sample_size: float = 0.1, **kwargs):
         """
-        Main function. Estimate partisanship according to Gentzkow's model.
-
-        Parameters
-        ----------
-        parties : TYPE
-            Party IDs.
-        speakers : TYPE
-            Speakers IDs.
-        text : TYPE
-            Texts.
-        text_id : TYPE, optional
-            Unique ID of each text. The default is None. Required when
-            level = 'speech'
-        level : TYPE, optional
-            Aggregation level. The default is "aggregate".
-        conf_int : int, optional
-            Number of confidence intervals. The default is None.
-        sample_size : float, optional
-            Sample size for confidence intervals. The default is 0.1.
-        **kwargs : TYPE
-            DESCRIPTION.
-
-        Returns
-        -------
-        TYPE
-            DESCRIPTION.
-
+        
+        :param list of party names: 
+        :param list of speaker IDs: 
+        :param list of texts: 
+        :param sparse array of vectorized text. Used for CI estimation.  
+        :param text_id: list of text IDs. Used when level = 'speech'
+        :param level: what level of aggregation to calculate polarization on 
+        :param conf_int: how many confidence intervals to calculate
+        :param sample_size: sample size for confidenence interval
+        :param kwargs: 
+        :return: 
         """
 
         # convert to numpy:
@@ -145,21 +132,78 @@ class ModelPolarization:
             p_scores = self._polarization(parties, speakers, text_vectorized, low_memory=True, **kwargs)
             return dict(zip(text_id, p_scores))
 
-    def get_posteriors(self, parties, speakers, text):
-        """
-        Get posterior distribution of each word to evaluate word-wise partisanship.
-
-        """
+    def estimate_phrase_frequency(self, parties: List[str], speakers: List[str], text: List[str]):
         parties = np.array(parties, dtype=str)
         speakers = np.array(speakers, dtype=str)
         text = np.array(text, dtype=str)
         text_vectorized = self._vectorize_text(text)
         parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
-        posterior = self._posterior(parties_a, speakers_a, text_vectorized_a, low_memory=False)
-        posterior = np.mean(posterior, axis=0)
-        posterior = dict(zip(self.vectorizer.get_feature_names(), posterior))
+        probs = self._phrase_prob(parties_a, speakers_a, text_vectorized_a, low_memory=False)
+        probs = np.mean(probs, axis=0)
+        probs = dict(zip(self.vectorizer.get_feature_names(), probs))
 
-        return posterior
+        return probs
+
+    def estimate_phrases(self, parties: List[str], speakers: List[str], text: List[str]):
+
+        parties = np.array(parties, dtype=str)
+        speakers = np.array(speakers, dtype=str)
+        text = np.array(text, dtype=str)
+        text_vectorized = self._vectorize_text(text)
+        parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            c_mat = text_vectorized_a.multiply(
+                1 / text_vectorized_a.sum(axis=1))  # normalize counts into individual probabilities
+            c_mat = np.nan_to_num(c_mat, copy=False, nan=0.5)  # convert missing to 0.5s
+            c_mat = c_mat.toarray() # store in csr format for indexing
+            probs = self._phrase_prob(parties_a, speakers_a, text_vectorized_a, low_memory=False)
+            c_mat = da.from_array(c_mat, chunks=(int(round(c_mat.shape[0]/1000)), c_mat.shape[1]))
+            res = c_mat[:, np.newaxis] / (1 - c_mat)[:, :, np.newaxis]
+            diags = np.einsum('jii->ji', res)
+            res = np.sum((res * probs[:, np.newaxis]) - diags[:, np.newaxis], axis=1)
+            res = 0.5 - 0.5 * res
+            with ProgressBar():
+                res = res.compute(num_workers=4)
+            res = np.mean(res, axis=1)
+            res = np.nan_to_num(res, 0)
+            phrases = self.vectorizer.get_feature_names()
+            res = dict(zip(phrases, res))
+            # FINAL IDEA: to reach the proper result, split and combine the party-wise polarization scores
+
+        return res
+
+    def estimate_phrases_emp(self, parties: List[str], speakers: List[str], text: List[str]):
+
+        parties = np.array(parties, dtype=str)
+        speakers = np.array(speakers, dtype=str)
+        text = np.array(text, dtype=str)
+        text_vectorized = self._vectorize_text(text)
+        parties_a, speakers_a, text_vectorized_a = self._aggregate(parties, speakers, text_vectorized)
+        post = self._polarization(parties_a, speakers_a, text_vectorized_a)
+        phr = np.array(self.vectorizer.get_feature_names())
+        post_change = dict()
+        for p in tqdm(phr):
+            p_ch = self._polarization(parties_a, speakers_a, text_vectorized_a[:, phr != p], low_memory=True)
+            post_change[p] = post - p_ch
+
+        return post_change
+
+
+        return res
+
+    def estimate_topics(self, source: list, topics: list):
+        dat = pd.DataFrame(dict(source=source, topic=topics))
+        dat = pd.DataFrame(dat.groupby(['source', 'topic']).size()).reset_index().pivot(index='topic', columns='source')
+        dat.columns = dat.columns.droplevel(0)
+        dat['n'] = dat['gov'] + dat['opp']  # get number of tweets in topic on this day
+        dat['prob_gov'] = dat['gov'] / (dat['n'])  # get probability of topic in gov
+        dat['prob_opp'] = 1 - dat['prob_gov']  # get probability of topic in opp
+        # get posterior probability of assigning to correct party for each topic
+        dat['pola'] = dat['prob_gov'] * dat['gov'] / dat['n'] + dat['prob_opp'] * dat['opp'] / dat['n']
+        # get weigthed average
+        pola = (dat['pola'] * dat['n'] / dat['n'].sum()).sum()
+        return pola
 
     def prefit(self, text):
         """
@@ -231,9 +275,9 @@ class ModelPolarization:
 
         return parties_u, speakers_u, agg
 
-    def _posterior(self, parties, speakers, text_vectorized, leave_out=True, low_memory=True):
+    def _phrase_prob(self, parties, speakers, text_vectorized, leave_out=True, low_memory=True):
         """
-        
+        Get probabilities of phrases for each party.
 
         Parameters
         ----------
@@ -245,7 +289,7 @@ class ModelPolarization:
             vectorized text.
         leave_out : bool, optional
             Whether to calculate the leave-out estimate. The default is True.
-            If False - compute plug in estimate of posterior, i.e. same for all speakers
+            If False - compute plug in estimate of phrase-party probabilities, i.e. same for all speakers
         low_memory: bool, optional
             control whether the computation is memory-efficient (through a for loop on a dictionary, 
             using sparse arrays or processing-time efficient (using vectorization on np.array)
@@ -253,31 +297,30 @@ class ModelPolarization:
 
         Returns
         -------
-        posteriors : np.array
-            posterior probabilities of being assigned to first party for each phrase in text.
+        probs : np.array
+            probabilities of each phrase being assigned to a party
 
         """
 
         if leave_out:
 
             if low_memory:
-                # this methodis more memory efficient, but takes longer processing time:
-
-                # leave out estimate (i.e. for each speaker posterior calculated EXCLUDING his vocabulary)
-                posteriors = dict()
+                # this method is more memory efficient, but takes longer processing time:
+                # leave out estimate (i.e. for each speaker party probabilities calculated EXCLUDING his vocabulary)
+                probs = dict()
                 for speaker in np.unique(speakers):  # compute for each speaker
                     ind = (speakers != speaker)  # indices of all speakers but the current one
                     denominator = text_vectorized[ind].sum(axis=0)  # phrase counts for all speakers but the current one
                     numerator = text_vectorized[(parties == self.party[0]) & ind].sum(
                         axis=0)  # same as above but only party 0
                     with np.errstate(divide='ignore', invalid='ignore'):
-                        posteriors[speaker] = numerator / denominator  # calculate posterior
-                    posteriors[speaker] = np.nan_to_num(posteriors[speaker], nan=0.5, copy=False)
+                        probs[speaker] = numerator / denominator  # calculate probabilities
+                    probs[speaker] = np.nan_to_num(probs[speaker], nan=0.5, copy=False)
                 # return a dict
             else:
 
                 # this method is vectorized, but takes up more memory
-                self.logger.debug('Computing posteriors')
+                self.logger.debug('Computing phrase probabilities')
                 text_vectorized = text_vectorized.toarray()  # convert sparse to normal
                 denominators = text_vectorized.sum(
                     axis=0) - text_vectorized  # sum of all phrases for each excluding each
@@ -287,9 +330,9 @@ class ModelPolarization:
                 # in the leave out method, if a phrase was used only by particular speaker, the denominator is 0
                 # in those cases, the produced nans should be replaced with 0.5, the neutral prior
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    posteriors = numerators / denominators
-                posteriors = np.nan_to_num(posteriors, nan=0.5, copy=False)
-                self.logger.debug('Done computing posteriors')
+                    probs = numerators / denominators
+                probs = np.nan_to_num(probs, nan=0.5, copy=False)
+                self.logger.debug('Done computing probabilities')
                 # return an array
 
         else:
@@ -297,10 +340,10 @@ class ModelPolarization:
             # plug in estimate
             denominator = text_vectorized.sum(axis=0)  # phrase counts for all speakers
             numerator = text_vectorized[parties == self.party[0]].sum(axis=0)  # phrase counts for party 0
-            posteriors = defaultdict(lambda: numerator / denominator)  # calculate posterior
+            probs = defaultdict(lambda: numerator / denominator)  # calculate probabilities
             # return a dict
 
-        return posteriors
+        return probs
 
     def _polarization(self, parties, speakers, text_vectorized,
                       low_memory=True, **kwargs):
@@ -333,30 +376,29 @@ class ModelPolarization:
         c_mat = np.nan_to_num(c_mat, copy=False, nan=0.5)  # convert missing to 0.5s
 
         if low_memory:
-            # memory-efficient version - requires id:count dictionary as input, return by the _posterior method
+            # memory-efficient version - requires id:count dictionary as input, return by the _phrase_prob method
             # if low_memory set to True
             c_mat = c_mat.tocsr()  # convert to csr
-            posterior = self._posterior(parties, speakers, text_vectorized, low_memory=low_memory,
-                                        **kwargs)  # get posterior
+            probs = self._phrase_prob(parties, speakers, text_vectorized, low_memory=low_memory,
+                                      **kwargs)  # get probabilities
             p_scores = np.zeros(c_mat.shape[0])  # store polarization scores
 
             for speaker in np.unique(speakers):
                 ind = speakers == speaker
-                post = np.array(posterior[speaker]).flatten()
-                # depending on the party, posterior is either posterior or 1 -posterior
+                prob = np.array(probs[speaker]).flatten()
+                # depending on the party, probability is either proba or 1 - proba
                 if np.unique(parties[ind])[0] != self.party[0]:
-                    post = 1 - post
+                    prob = 1 - prob
                 counts = np.array(c_mat[ind].todense())
-                p_scores[ind] = np.sum(counts * post, axis=1)  # rowwise dot product
+                p_scores[ind] = np.sum(counts * prob, axis=1)  # rowwise dot product
         else:
             # vectorized version - requires array as input:
-            # depending on the party, posterior is either posterior or 1 -posterior
+            # depending on the party, prob is either prob or 1 -prob
             c_mat = c_mat.toarray()  # convert to csr
-            posterior = self._posterior(parties, speakers, text_vectorized, low_memory=low_memory,
-                                        **kwargs)  # get posterior
-            p_scores = np.zeros(c_mat.shape[0])  # store polarization scores
-            posterior[parties != self.party[0]] = 1 - posterior[parties != self.party[0]]  # SUBTRACTION OF ONE!
-            p_scores = np.sum(c_mat * posterior, axis=1)  # rowwise dot product
+            probs = self._phrase_prob(parties, speakers, text_vectorized, low_memory=low_memory,
+                                      **kwargs)  # get probs
+            probs[parties != self.party[0]] = 1 - probs[parties != self.party[0]]  # SUBTRACTION OF ONE!
+            p_scores = np.sum(c_mat * probs, axis=1)  # rowwise dot product
 
         p_scores[np.array(c_mat.sum(axis=1) == 0).flatten()] = 0.5  # if no phrase counted = 0.5 similarity (neutral)
 
@@ -427,23 +469,10 @@ class ModelPolarization:
 
         return stats
 
-    def estimate_topics(self, source: list, topics: list):
-        dat = pd.DataFrame(dict(source=source, topic=topics))
-        dat = pd.DataFrame(dat.groupby(['source', 'topic']).size()).reset_index().pivot(index='topic', columns='source')
-        dat.columns = dat.columns.droplevel(0)
-        dat['n'] = dat['gov'] + dat['opp']  # get number of tweets in topic on this day
-        dat['prob_gov'] = dat['gov'] / (dat['n'])  # get probability of topic in gov
-        dat['prob_opp'] = 1 - dat['prob_gov']  # get probability of topic in opp
-        # get posterior probability of assigning to correct party for each topic
-        dat['pola'] = dat['prob_gov'] * dat['gov'] / dat['n'] + dat['prob_opp'] * dat['opp'] / dat['n']
-        # get weigthed average
-        pola = (dat['pola'] * dat['n'] / dat['n'].sum()).sum()
-        return pola
-
 
 # test
 if __name__ == "__main__":
-    from src.twitter_tools.utils import read_window
+    from src.twitter_tools.utils import read_window, read_files
     from functools import partial
     import random
     import pickle
@@ -494,38 +523,15 @@ if __name__ == "__main__":
     random.shuffle(random_values)  # randomize values
     randomized = dict(zip(random_keys, random_values))  # zip into dict
 
-
     ff = partial(filter_fun, drop_users=drop_users, drop_tweets=drop_tweets,
                  subset=['lemmatized'], keep_cols=['day', 'lemmatized', 'id_str', 'user-id_str', 'source'])
 
-
-
     START = '2020_02_23'
-    END = '2020_07_18'
-    results = dict()
-    for df in tqdm(read_window(PATH_DATA, n=7, batch_size=1,
-                               day_from=START, day_to=END, dtype=dtypes, filter_fun=ff)):
-        # fit vectorizer on all vocabulary:
-        model = ModelPolarization(parties=["gov", "opp"], limit=40, ngram_range=(1, 2),
-                                  log=20, n_jobs=4, stop_words=stopwords)
-        model.prefit(df["lemmatized"].astype(str).to_numpy())
-        date_range = sorted(pd.to_datetime(df.day.unique()))
-        mid_date = date_range[3].date().strftime('%Y-%m-%d')
-        df = df[df['day'] == mid_date]
-        results[(mid_date, 'true')] = model.estimate(df['source'],
-                                                     df['user-id_str'],
-                                                     df['lemmatized'],
-                                                     level='aggregate',
-                                                     conf_int=100,
-                                                     leave_out=True)
-        random_parties = df["user-id_str"].astype(str).apply(lambda x: randomized.get(x))
-        results[(mid_date, 'random')] = model.estimate(random_parties,
-                                                       df['user-id_str'],
-                                                       df['lemmatized'],
-                                                       level='aggregate',
-                                                       conf_int=100,
-                                                       leave_out=True)
+    END = '2020_07_23'
+    data = next(read_files(PATH_DATA, batch_size=1, day_from=START, day_to=END, dtype=dtypes, filter_fun=ff))
 
-    results = pd.DataFrame.from_dict(results, orient='index')
-    results.index.names = ['date', 'type']
-    results.to_csv('tmp.csv')
+    # fit vectorizer on all vocabulary:
+    model = ModelPolarization(parties=["gov", "opp"], limit=40, ngram_range=(1, 2),
+                              log=20, n_jobs=4, stop_words=stopwords)
+    phrase_pol = model.estimate_phrases_emp(data['source'], data['user-id_str'], data['lemmatized'])
+    print(sorted(phrase_pol.items(), key=lambda x: x[1], reverse=True))

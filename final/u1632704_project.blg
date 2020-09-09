@@ -1,0 +1,68 @@
+This is BibTeX, Version 0.99d (TeX Live 2019/Debian)
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: u1632704_project.aux
+The style file: apalike.bst
+Database file #1: bds_project_bibliography.bib
+I was expecting a `,' or a `}'---line 62 of file bds_project_bibliography.bib
+ :  
+ :  title = {{The Law of Group Polarization}},
+(Error may have been on previous line)
+I'm skipping whatever remains of this entry
+I was expecting a `,' or a `}'---line 427 of file bds_project_bibliography.bib
+ :  
+ :  title = {{Cultural Backlash: Trump, Brexit, and Authoritarian Populism}},
+(Error may have been on previous line)
+I'm skipping whatever remains of this entry
+I was expecting a `,' or a `}'---line 448 of file bds_project_bibliography.bib
+ :  
+ :  city = {Cambridge, UK}
+(Error may have been on previous line)
+I'm skipping whatever remains of this entry
+Warning--I didn't find a database entry for "sunstein2001"
+Warning--there's a number but no volume in bursztyn2020
+Warning--can't use both volume and number fields in conover2011
+Warning--empty title in norris2019
+Warning--empty booktitle in roder2015
+Warning--empty title in sunstein2002
+You've used 54 entries,
+            1935 wiz_defined-function locations,
+            770 strings with 13286 characters,
+and the built_in function-call counts, 21480 in all, are:
+= -- 2104
+> -- 887
+< -- 33
++ -- 298
+- -- 298
+* -- 1860
+:= -- 3754
+add.period$ -- 157
+call.type$ -- 54
+change.case$ -- 410
+chr.to.int$ -- 54
+cite$ -- 59
+duplicate$ -- 784
+empty$ -- 1505
+format.name$ -- 368
+if$ -- 4144
+int.to.chr$ -- 1
+int.to.str$ -- 0
+missing$ -- 59
+newline$ -- 268
+num.names$ -- 162
+pop$ -- 370
+preamble$ -- 1
+purify$ -- 419
+quote$ -- 0
+skip$ -- 578
+stack$ -- 0
+substring$ -- 1596
+swap$ -- 77
+text.length$ -- 5
+text.prefix$ -- 0
+top$ -- 0
+type$ -- 308
+warning$ -- 5
+while$ -- 183
+width$ -- 0
+write$ -- 679
+(There were 3 error messages)

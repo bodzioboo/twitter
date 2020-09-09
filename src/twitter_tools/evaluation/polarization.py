@@ -16,7 +16,7 @@ def plot_aggregated(date: list,
                     true_estimate: list, random_estimate: list = None,
                     true_ci: tuple = None, random_ci: tuple = None,
                     trend_line: bool = False, lowess: bool = False,
-                    tick_freq: int = 10, ax=None):
+                    tick_freq: int = 10, ax=None, legend: bool=False):
     if ax is None:
         plt.gca()
     ax.plot(date, true_estimate, lw=3, label='Leave out estimator', color='blue')
@@ -35,7 +35,10 @@ def plot_aggregated(date: list,
         preds = sm.nonparametric.lowess(true_estimate.to_numpy(), date_num)
         ax.plot(preds[:, 0], preds[:, 1], '-', color='green')
 
-    ax.legend(loc='upper left')
+    if legend:
+        ax.legend(loc='upper left')
+    else:
+        ax.legend().remove()
     ax.xaxis.set_tick_params(rotation=45)
     ax.xaxis.set_ticks(np.arange(len(date), step=tick_freq))
     ax.set_xlabel('Date')
@@ -81,5 +84,4 @@ def plot_aggregated_bytopic(date: list, true_estimate: list, topics: list,
 
             ax[i].set_title(f'Topic {unique_topics[i]}')
             ax[i].grid()
-    plt.tight_layout()
-    plt.show()
+    return fig

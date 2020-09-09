@@ -23,6 +23,7 @@ import numpy as np
 from itertools import islice, repeat, chain
 import gc
 from operator import itemgetter
+from googletrans import Translator
 from functools import partial
 
 # use logger of whatever file it's executed from
@@ -486,7 +487,7 @@ def read_files(path: str, day_from: str, day_to: str, dtype: str = None,
 
 
 def read_window(path, n=7, **kwargs):
-    reader = read_files(path=path, method='pandas',**kwargs)
+    reader = read_files(path=path, method='pandas', **kwargs)
     result = tuple(islice(reader, n))
     if len(result) == n:
         yield pd.concat(result)
@@ -715,6 +716,36 @@ class VectorDictLowMemory(VectorDict):
         vectors = self.getter(word)
         results = self.most_similar_by_vectors(vectors, n)
         return results
+
+
+def translate(text: list, manual: dict = None, retry_lim: int = 1, verbose: int = 0):
+    """
+    Translate tokenized text Polish --> English
+    :param text - tokenized words in Polish
+    :param manual - words for mannual annotation
+    :param verbose: verbosity level
+    :param retry_lim: number of times to retry running
+    :return: text_en - list of translated texts
+    """
+    translator = Translator()
+    retry_count = 0
+    while True:
+        try:
+            text_en = [translator.translate(w, src='pl', dest='en').text for w in text]
+        except Exception as e:
+            if retry_count > retry_lim:
+                return text
+            else:
+                print(e)
+                print('Retrying')
+                retry_count += 1
+                continue
+        break
+    if verbose == 1:
+        print('Done translating')
+    if manual is not None:
+        text_en = [manual[w] if w in manual else text_en[i] for i, w in enumerate(text)]
+    return text_en
 
 
 if __name__ == "__main__":
